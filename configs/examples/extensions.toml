@@ -1,0 +1,20 @@
+extensions = ["../../examples/python-extension/manifest.json"]
+
+[[providers]]
+id = "mock"
+kind = "mock"
+model = "deterministic-demo"
+allow_private = true
+
+# The example is deterministic. It demonstrates replacement, not AI quality.
+[[providers]]
+id = "python-demo"
+kind = "extension"
+extension = "example.sensor"
+capability = "example.inference"
+model = "deterministic-python"
+cloud = false
+allow_private = true
+max_context_chars = 12000
+max_output_tokens = 384
+timeout_seconds = 5

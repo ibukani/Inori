@@ -1,0 +1,9 @@
+{
+  "name": "@inori/extension-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {".": "./src/index.ts", "./contracts": "./src/generated.ts"},
+  "scripts": {"check": "tsc --noEmit", "test": "node --experimental-strip-types --test src/index.test.ts"},
+  "devDependencies": {"typescript": "~5.9.3", "@types/node": "^24.0.0"}
+}

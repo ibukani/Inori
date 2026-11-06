@@ -1,0 +1,56 @@
+[package]
+name = "inori-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+inori-module-api = { path = "../../crates/module-api" }
+inori-composition = { path = "../../crates/composition" }
+inori-perception-basic = { path = "../../modules/perception-basic" }
+inori-dialogue-standard = { path = "../../modules/dialogue-standard" }
+inori-memory-standard = { path = "../../modules/memory-standard" }
+inori-autonomy-standard = { path = "../../modules/autonomy-standard" }
+inori-inference-providers = { path = "../../modules/inference-providers" }
+inori-speech-whisper = { path = "../../modules/speech-whisper" }
+inori-speech-voicevox = { path = "../../modules/speech-voicevox" }
+inori-actions-extensions = { path = "../../modules/actions-extensions" }
+inori-channel-standard = { path = "../../modules/channel-standard" }
+anyhow.workspace = true
+async-trait.workspace = true
+jsonschema.workspace = true
+rustls.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+base64.workspace = true
+clap.workspace = true
+directories.workspace = true
+futures-util.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+tower-http.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+inori-domain = { path = "../../crates/domain" }
+inori-runtime = { path = "../../crates/runtime" }
+inori-protocol = { path = "../../crates/protocol" }
+inori-storage-sqlite = { path = "../../crates/storage-sqlite" }
+inori-extension-host = { path = "../../crates/extension-host" }
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+async-trait.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

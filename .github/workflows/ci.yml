@@ -1,0 +1,46 @@
+name: verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+      - run: cargo fmt --all -- --check
+      - run: python tools/generate_contracts.py --check
+      - run: python tools/check_boundaries.py
+      - run: cargo test --locked --workspace --exclude inori-desktop
+      - run: cargo build --locked -p inori-server
+      - run: python tools/check_config_examples.py
+      - run: python tools/test_e2e.py
+      - run: cargo clippy --locked --workspace --exclude inori-desktop --all-targets -- -D warnings
+      - name: Server must not link the desktop framework
+        shell: pwsh
+        run: |
+          $tree = cargo tree --locked -p inori-server --edges normal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($tree -match 'gpui|cpal|tray-icon|inori-client-core') { throw 'GUI dependency in headless server' }
+      - if: runner.os == 'Windows'
+        run: cargo build --locked -p inori-desktop
+      - if: runner.os == 'Windows'
+        run: cargo test --locked -p inori-desktop
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm --filter @inori/extension-sdk check
+      - run: corepack pnpm --filter @inori/extension-sdk test

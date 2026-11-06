@@ -1,0 +1,11 @@
+{
+  "id": "example.sensor",
+  "protocol_major": 1,
+  "placement": "server",
+  "entrypoint": "python",
+  "args": ["-u", "extension.py"],
+  "capabilities": [{"id": "example.sensor.pose", "kind": "perception", "input_schema": {"type": "object"}}, {"id": "example.inference", "kind": "inference", "input_schema": {"type": "object"}}],
+  "permissions": [{"capability": "example.sensor.pose", "action": "invoke", "target": "server"}, {"capability": "example.inference", "action": "infer", "target": "server"}],
+  "max_message_bytes": 65536,
+  "timeout_ms": 5000
+}

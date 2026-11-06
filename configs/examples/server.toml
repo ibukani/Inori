@@ -1,0 +1,51 @@
+# External engines are opt-in. Keep mock configured when opening existing demo data.
+extensions = []
+
+[character]
+id = "inori"
+name = "Inori"
+persona = "好奇心があり親しみやすい。相手のことを少しずつ知り、自分の興味も持つ。推測を断定せず、実行していないことを体験談にしない。"
+revision = 0
+active_provider = "mock"
+
+[autonomy]
+enabled = true
+interval_seconds = 1800
+max_actions = 3
+cloud_enabled = false
+daily_inference_limit = 24
+
+[[providers]]
+id = "mock"
+kind = "mock"
+model = "deterministic-demo"
+allow_private = true
+
+# Uncomment only after installing an engine and a model on the chosen machine.
+# [[providers]]
+# id = "home-ollama"
+# kind = "ollama"
+# base_url = "http://127.0.0.1:11434"
+# model = "YOUR_INSTALLED_MODEL"
+# cloud = false
+# allow_private = true
+# max_context_chars = 12000
+# max_output_tokens = 384
+# timeout_seconds = 60
+# thinking = false # Optional: only for engines/models that support this Ollama option.
+
+# [[providers]]
+# id = "cloud"
+# kind = "compatible_http"
+# base_url = "https://YOUR_CONFIGURED_PROVIDER/v1"
+# model = "YOUR_MODEL"
+# api_key_env = "INORI_PROVIDER_KEY"
+# cloud = true
+# allow_private = false
+
+[voice]
+# whisper_url = "http://127.0.0.1:8080"
+# voicevox_url = "http://127.0.0.1:50021"
+speaker = 0
+cancellable_synthesis = false
+allow_private_remote = false # Set explicitly for a trusted voice engine on a different PC.

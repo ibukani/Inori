@@ -1,0 +1,30 @@
+# No dialogue or standard channel. Management HTTP remains available.
+[autonomy]
+enabled = true
+interval_seconds = 1800
+max_actions = 3
+daily_inference_limit = 24
+cloud_enabled = false
+
+[composition]
+schema_version = 1
+enabled = ["perception.basic", "memory.standard", "autonomy.standard", "inference.providers"]
+settings = {}
+
+[[composition.bindings]]
+module = "memory.standard"
+port = "inference"
+provider = "inference.providers"
+major = 1
+
+[[composition.bindings]]
+module = "autonomy.standard"
+port = "inference"
+provider = "inference.providers"
+major = 1
+
+[[composition.bindings]]
+module = "autonomy.standard"
+port = "awareness"
+provider = "perception.basic"
+major = 1

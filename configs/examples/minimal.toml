@@ -1,0 +1,6 @@
+# Management, authentication, persistence and maintenance only. No engines or extensions start.
+[composition]
+schema_version = 1
+enabled = []
+bindings = []
+settings = {}

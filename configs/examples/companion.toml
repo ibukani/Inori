@@ -1,0 +1,51 @@
+# Explicit equivalent of the previous text companion (mock inference; voice is opt-in).
+# For engine configuration examples see server.toml. Existing active_provider must remain configured.
+[composition]
+schema_version = 1
+enabled = ["perception.basic", "dialogue.standard", "memory.standard", "autonomy.standard", "inference.providers", "actions.extensions", "channel.standard"]
+
+[composition.settings]
+"dialogue.standard" = { quick_output_tokens = 160 }
+"perception.basic" = { omit_presence = false }
+
+[[composition.bindings]]
+module = "dialogue.standard"
+port = "inference"
+provider = "inference.providers"
+major = 1
+
+[[composition.bindings]]
+module = "dialogue.standard"
+port = "awareness"
+provider = "perception.basic"
+major = 1
+
+[[composition.bindings]]
+module = "memory.standard"
+port = "inference"
+provider = "inference.providers"
+major = 1
+
+[[composition.bindings]]
+module = "autonomy.standard"
+port = "inference"
+provider = "inference.providers"
+major = 1
+
+[[composition.bindings]]
+module = "autonomy.standard"
+port = "awareness"
+provider = "perception.basic"
+major = 1
+
+[[composition.bindings]]
+module = "channel.standard"
+port = "dialogue"
+provider = "dialogue.standard"
+major = 1
+
+[[composition.bindings]]
+module = "channel.standard"
+port = "actions"
+provider = "actions.extensions"
+major = 1
