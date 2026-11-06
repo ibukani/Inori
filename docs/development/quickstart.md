@@ -49,6 +49,15 @@ target/debug/inori-desktop.exe --server https://home-server:9473 --token-file C:
 
 会話は模擬応答でまず確認できます。実AIでは `server.toml` のOllamaまたは互換HTTP設定を追加し、
 サーバー再起動後に設定画面からモデルを選びます。既存DBのモデルを設定から消すと起動を拒否します。
+`server.toml` はGroqCloudの `qwen/qwen3.8-27b` を選択済みです。起動前に同じPowerShellでAPIキーを設定します。
+
+```powershell
+$env:GROQ_API_KEY = "<Groq API key>"
+cargo run --locked -p inori-server -- --config configs/examples/server.toml
+```
+
+新しいDBではGroqが選択されます。既存DBは保存済みのモデルを維持するため、起動後に設定画面でGroqへ切り替えます。
+このプロファイルは私的会話とその文脈をGroqへ送る設定です。自律活動のクラウド推論は `cloud_enabled = false` のままです。
 VOICEVOXとwhisper.cppも明示的に設定した場合のみ接続します。
 別PCの音声エンジンへ私的な音声や発話文を送るには `voice.allow_private_remote = true` も設定します。
 マイクはボタンで開始・終了します。Escapeまたは「止める」で音声と生成を停止します。

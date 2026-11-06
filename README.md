@@ -3,6 +3,8 @@
 自宅サーバーで生きる、自分に合わせて育つキャラクターの開発基盤です。
 
 Rust の実行核と GPUI クライアントを分離し、AI・音声・表示・行動を交換可能にします。
+Windowsクライアントは実行時の負荷・メモリ使用量の抑制を重視し、GPUIで継続開発します。
+選定方針は [ADR 0004](docs/adr/0004-gpui-resource-priority.md)、実機適合性の本採用条件は [GPUI採用ゲート](docs/development/gpui-gate.md) を参照してください。
 実装状態と実機未検証の条件は [開発状況](docs/development/status.md) に記載します。
 
 - [確定要件と対応表](docs/requirements.md)

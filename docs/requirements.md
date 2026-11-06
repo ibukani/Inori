@@ -12,7 +12,7 @@
 | R06 | user | Windows、8GB RAM、専用GPUなし。自宅LAN/VPNから接続 | desktop-gpui / TLS / device auth / hardware gate |
 | R07 | user | 拡張・対象・操作ごとに権限を設定する | permissions / operation ledger |
 | R08 | user | 初期は信頼済みの第三者製拡張。未信頼コードの強い隔離は対象外 | extension-host / trust documentation |
-| R09 | user | 初期は会話・時刻・在席・簡易2D。画面・カメラ・配信・家電は後続 | client-core / renderer manifest |
+| R09 | user | 初期は会話・時刻・在席。画面・カメラ・配信・家電は後続 | runtime / client-core |
 | R10 | user | 会話の状況に合うテンポと深さ、音声の割り込み | dialogue modes / generation ID / playback ack |
 | R11 | user | モデルの品質差で記憶を汚染・破損させない | provenance / revision CAS / deletion suppression / review |
 | R12 | user | 見た目は素材と描画エンジンを追加・交換できる | renderer contracts / assets |
@@ -20,8 +20,11 @@
 | R14 | user | 既存サーバーの能力を設定ファイルで組み替え、再起動で適用する | module-api / composition / modules / composition tests |
 | R15 | user | クライアントは通常のアプリとし、共通接続と必要な専用アダプターで対応する | channel.standard / capabilities / client-core |
 | R16 | user | 全能力なしでも管理・保存・保守を維持し、構成変更でも状態と保護規則を保つ | runtime kernel / module state CAS / migration tests |
+| R17 | user | アプリ実行時の負荷・メモリ使用量の抑制を重視し、WindowsクライアントにGPUIを使用する | desktop-gpui / resource measurements / GPUI gate |
+| R18 | user | デスクトップは単一時系列のチャット専用。白と空色を基調にし、画像・キャラクター描画と記憶・人格・モデル・権限の管理画面を含めない。接続設定は残し、管理アプリは別にする | desktop-gpui / ADR 0005 |
+| R19 | user | マイク入力とAI音声出力を独立トグルにし、起動時は両方OFF。マイクON中は発話を自動区切りし、トレイへ隠しても会話を続け、終了操作で停止する | client-core audio / desktop-gpui / GPUI gate |
 | D01 | design | Rust + Tokio + Axum、SQLx + SQLite | server / storage-sqlite |
-| D02 | design | Rust + GPUIは適合性検証を行う採用案 | desktop-gpui / GPUI gate |
+| D02 | design | R17に従いRust + GPUIで継続開発する。対象環境での適合性合格を本採用の条件とする | desktop-gpui / GPUI gate / ADR 0004 |
 | D03 | design | 一つの私有Gitリポジトリ内の複数プロジェクト | Cargo workspace |
 | D04 | design | 標準能力は独立Rust crate、同一プロセス。構成は能力契約と明示した接続先で検証 | modules / ADR 0003 |
 | T01 | target | 雑談音声の初動p50 1〜2秒、p95 3秒以内（warm/LAN） | performance harness |

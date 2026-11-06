@@ -24,7 +24,6 @@ pub struct ClientConfig {
     pub certificate_file: Option<PathBuf>,
     #[serde(default)]
     pub insecure_loopback: bool,
-    pub model_pack: Option<PathBuf>,
 }
 impl ClientConfig {
     pub fn local() -> Result<Self> {
@@ -34,7 +33,6 @@ impl ClientConfig {
             token_file: base.join("owner.token"),
             certificate_file: Some(base.join("server.pem")),
             insecure_loopback: false,
-            model_pack: None,
         })
     }
 }
@@ -277,7 +275,6 @@ mod tests {
             token_file: "missing.token".into(),
             certificate_file: None,
             insecure_loopback: true,
-            model_pack: None,
         };
         assert!(
             ApiClient::new(&config)

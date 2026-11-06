@@ -1,6 +1,6 @@
 use crate::{
     ApiClient, ClientConfig,
-    audio::{PlaybackController, Recorder},
+    audio::{PlaybackController, VoiceCapture, VoiceCaptureEvent},
 };
 use anyhow::{Context, Result, bail};
 use inori_domain::Snapshot;
@@ -10,6 +10,7 @@ use inori_protocol::{
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -26,7 +27,9 @@ pub enum UiEvent {
     Capabilities { extensions: Value, grants: Value },
     Review(Value),
     Transcript(String),
-    Recording(bool),
+    Microphone(bool),
+    Listening(bool),
+    SpeechOutput(bool),
     Speaking(bool),
 }
 #[derive(Debug)]
@@ -83,11 +86,8 @@ pub enum ClientCommand {
     Presence {
         present: bool,
     },
-    StartRecording,
-    FinishRecording {
-        mode: DialogueMode,
-        speak: bool,
-    },
+    SetMicrophone(bool),
+    SetSpeechOutput(bool),
 }
 pub struct BackendControl {
     pub commands: mpsc::Sender<ClientCommand>,
@@ -172,6 +172,8 @@ async fn run(
     let active = Arc::new(Mutex::new(None::<String>));
     let (stream_tx, mut stream_rx) = mpsc::channel(64);
     let (audio_tx, mut audio_rx) = mpsc::channel::<(String, u64, String, u64)>(2);
+    let (voice_tx, mut voice_rx) = mpsc::channel::<VoiceCaptureEvent>(8);
+    let speech_enabled = Arc::new(AtomicBool::new(false));
     let reconnect_client = client.clone();
     let reconnect_stop = stop.clone();
     let reconnect_ui = ui.clone();
@@ -216,16 +218,19 @@ async fn run(
     let audio_ui = ui.clone();
     let audio_controller = playback.clone();
     let audio_stop = stop.clone();
+    let audio_speech_enabled = speech_enabled.clone();
     tokio::spawn(async move {
         while let Some((generation, segment, resource, epoch)) =
             tokio::select! {_=audio_stop.cancelled()=>None,item=audio_rx.recv()=>item}
         {
-            if epoch != audio_controller.epoch() {
+            if epoch != audio_controller.epoch() || !audio_speech_enabled.load(Ordering::Acquire) {
                 continue;
             }
             let result = async {
                 let bytes = audio_client.bytes(&resource).await?;
-                if epoch != audio_controller.epoch() {
+                if epoch != audio_controller.epoch()
+                    || !audio_speech_enabled.load(Ordering::Acquire)
+                {
                     return Ok(());
                 }
                 let _ = audio_ui.send(UiEvent::Speaking(true)).await;
@@ -254,7 +259,8 @@ async fn run(
     });
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
     let slots = Arc::new(Semaphore::new(4));
-    let mut recorder: Option<Recorder> = None;
+    let mut capture: Option<VoiceCapture> = None;
+    let mut microphone_epoch = 0_u64;
     let mut available: Option<ServerCapabilities> = None;
     let mut present = true;
     loop {
@@ -265,9 +271,42 @@ async fn run(
                 let Some(event)=event else{break};
                 let current_generation=event.generation_id==*active.lock().await;
                 match event.kind.as_str(){
-                    "client.connected"=>{ui.send(UiEvent::Connected).await?;match tokio::time::timeout(std::time::Duration::from_secs(3),client.availability()).await { Ok(Ok(value))=>{ui.send(UiEvent::Availability(value.clone())).await?;available=Some(value);}, _=>{available=None;ui.send(UiEvent::Error("サーバーの利用可能な機能を確認できませんでした。".into())).await?;} };let c=client.clone();let u=ui.clone();tokio::spawn(async move{let _=refresh(&c,&u).await;let _=capabilities(&c,&u).await;if let Ok(value)=c.call::<Value>(Method::GET,"/v1/providers",None).await{let _=u.send(UiEvent::Providers(value)).await;}});},
-                    "server.hello"=>{let value:ServerCapabilities=serde_json::from_value(event.payload.clone())?;ui.send(UiEvent::Availability(value.clone())).await?;available=Some(value);},
-                    "client.disconnected"=>{available=None;drop(recorder.take());playback.stop();*active.lock().await=None;ui.send(UiEvent::Recording(false)).await?;ui.send(UiEvent::Speaking(false)).await?;ui.send(UiEvent::Disconnected).await?;},
+                    "client.connected"=>{
+                        ui.send(UiEvent::Connected).await?;
+                        match tokio::time::timeout(std::time::Duration::from_secs(3),client.availability()).await {
+                            Ok(Ok(value))=>{
+                                let (microphone_off, speech_off)=reconcile_voice_capabilities(
+                                    &value, &mut capture, &mut microphone_epoch, &playback, &speech_enabled,
+                                );
+                                if microphone_off { ui.send(UiEvent::Microphone(false)).await?; }
+                                if speech_off { ui.send(UiEvent::SpeechOutput(false)).await?; }
+                                ui.send(UiEvent::Availability(value.clone())).await?;
+                                available=Some(value);
+                            },
+                            _=>{
+                                available=None;
+                                microphone_epoch+=1;
+                                drop(capture.take());
+                                playback.stop();
+                                speech_enabled.store(false,Ordering::Release);
+                                ui.send(UiEvent::Microphone(false)).await?;
+                                ui.send(UiEvent::SpeechOutput(false)).await?;
+                                ui.send(UiEvent::Error("サーバーの利用可能な機能を確認できませんでした。".into())).await?;
+                            }
+                        };
+                        let c=client.clone();let u=ui.clone();tokio::spawn(async move{let _=refresh(&c,&u).await;});
+                    },
+                    "server.hello"=>{
+                        let value:ServerCapabilities=serde_json::from_value(event.payload.clone())?;
+                        let (microphone_off, speech_off)=reconcile_voice_capabilities(
+                            &value, &mut capture, &mut microphone_epoch, &playback, &speech_enabled,
+                        );
+                        if microphone_off { ui.send(UiEvent::Microphone(false)).await?; }
+                        if speech_off { ui.send(UiEvent::SpeechOutput(false)).await?; }
+                        ui.send(UiEvent::Availability(value.clone())).await?;
+                        available=Some(value);
+                    },
+                    "client.disconnected"=>{available=None;microphone_epoch+=1;drop(capture.take());playback.stop();speech_enabled.store(false,Ordering::Release);*active.lock().await=None;ui.send(UiEvent::Microphone(false)).await?;ui.send(UiEvent::SpeechOutput(false)).await?;ui.send(UiEvent::Speaking(false)).await?;ui.send(UiEvent::Disconnected).await?;},
                     "turn.started"=>{playback.stop();*active.lock().await=event.generation_id.clone();},
                     "speech.segment" if current_generation=>{
                         if let (Some(g),Some(index),Some(id))=(event.generation_id.clone(),event.payload.get("segment_id").and_then(Value::as_u64),event.payload.pointer("/resource/id").and_then(Value::as_str))
@@ -278,18 +317,41 @@ async fn run(
                 }
                 ui.send(UiEvent::Event(event)).await?;
             },
+            voice=voice_rx.recv()=>{
+                let Some(voice)=voice else{continue};
+                match voice {
+                    VoiceCaptureEvent::SpeechStarted{epoch} if epoch==microphone_epoch=>{
+                        ui.send(UiEvent::Listening(true)).await?;
+                        playback.stop();
+                        if let Some(id)=active.lock().await.take(){let c=client.clone();tokio::spawn(async move{let _=c.call(Method::POST,&format!("/v1/generations/{id}/cancel"),Some(&json!({}))).await;});}
+                    }
+                    VoiceCaptureEvent::Segment{epoch,wav} if epoch==microphone_epoch && capture.is_some()=>{
+                        ui.send(UiEvent::Listening(false)).await?;
+                        let Ok(permit)=slots.clone().try_acquire_owned()else{let _=ui.send(UiEvent::Error("音声処理が混雑しています。しばらく待ってください。".into())).await;continue;};
+                        let c=client.clone();let u=ui.clone();let s=session.clone();let a=active.clone();let speech=speech_enabled.clone();
+                        tokio::spawn(async move{let _permit=permit;let result=async{let id=c.upload_wav(wav).await?;let value=c.call::<Value>(Method::POST,&format!("/v1/resources/{id}/transcribe"),Some(&json!({}))).await?;let text=value.get("text").and_then(Value::as_str).context("transcription missing")?.to_owned();u.send(UiEvent::Transcript(text.clone())).await?;let speak=speech.load(Ordering::Acquire);send_chat(&c,&s,&a,text,DialogueMode::Auto,speak).await?;Ok::<_,anyhow::Error>(())}.await;if let Err(error)=result{let _=u.send(UiEvent::Error(error.to_string())).await;}});
+                    }
+                    VoiceCaptureEvent::Error{epoch,message} if epoch==microphone_epoch=>{let _=ui.send(UiEvent::Error(message)).await;}
+                    VoiceCaptureEvent::Stopped{epoch} if epoch==microphone_epoch=>{
+                        microphone_epoch+=1;
+                        drop(capture.take());
+                        ui.send(UiEvent::Microphone(false)).await?;
+                    }
+                    _=>{}
+                }
+            },
             command=commands.recv()=>{
                 let Some(command)=command else{break};
                 if let Err(error)=check_available(&command,available.as_ref()){
-                    if matches!(command,ClientCommand::FinishRecording{..}){drop(recorder.take());ui.send(UiEvent::Recording(false)).await?;}
                     ui.send(UiEvent::Error(error.to_string())).await?;continue;
                 }
-                if matches!(command,ClientCommand::Interrupt|ClientCommand::StartRecording){playback.stop();if let Some(id)=active.lock().await.clone(){let c=client.clone();tokio::spawn(async move{let _=c.call(Method::POST,&format!("/v1/generations/{id}/cancel"),Some(&json!({}))).await;});}}
+                if matches!(command,ClientCommand::Interrupt){playback.stop();if let Some(id)=active.lock().await.take(){let c=client.clone();tokio::spawn(async move{let _=c.call(Method::POST,&format!("/v1/generations/{id}/cancel"),Some(&json!({}))).await;});}}
                 match command{
                     ClientCommand::Interrupt=>{*active.lock().await=None;},
+                    ClientCommand::SetSpeechOutput(value)=>{speech_enabled.store(value,Ordering::Release);if !value{playback.stop();}ui.send(UiEvent::SpeechOutput(value)).await?;},
+                    ClientCommand::SetMicrophone(false)=>{microphone_epoch+=1;if let Some(old)=capture.take(){old.stop();}ui.send(UiEvent::Microphone(false)).await?;},
+                    ClientCommand::SetMicrophone(true)=>{if capture.is_some(){continue;}microphone_epoch+=1;match VoiceCapture::start(playback.clone(),voice_tx.clone(),microphone_epoch){Ok(value)=>{capture=Some(value);ui.send(UiEvent::Microphone(true)).await?;},Err(error)=>{ui.send(UiEvent::Microphone(false)).await?;ui.send(UiEvent::Error(error.to_string())).await?;}}},
                     ClientCommand::Presence{present:value}=>{present=value;let c=client.clone();tokio::spawn(async move{let _=c.call(Method::PUT,"/v1/presence",Some(&json!({"present":value}))).await;});},
-                    ClientCommand::StartRecording=>{if recorder.is_none(){match tokio::task::spawn_blocking(Recorder::start).await?{Ok(value)=>{recorder=Some(value);ui.send(UiEvent::Recording(true)).await?;},Err(error)=>{ui.send(UiEvent::Error(error.to_string())).await?;}}}},
-                    ClientCommand::FinishRecording{mode,speak}=>{if let Some(recording)=recorder.take(){ui.send(UiEvent::Recording(false)).await?;let Ok(permit)=slots.clone().try_acquire_owned()else{drop(recording);ui.send(UiEvent::Error("録音処理が混雑しています。再度お試しください。".into())).await?;continue;};let c=client.clone();let u=ui.clone();let s=session.clone();let a=active.clone();tokio::spawn(async move{let _permit=permit;let result=async{let bytes=tokio::task::spawn_blocking(move||recording.finish()).await??;let id=c.upload_wav(bytes).await?;let value=c.call(Method::POST,&format!("/v1/resources/{id}/transcribe"),Some(&json!({}))).await?;let text=value.get("text").and_then(Value::as_str).context("transcription missing")?.to_owned();u.send(UiEvent::Transcript(text.clone())).await?;send_chat(&c,&s,&a,text,mode,speak).await?;Ok::<_,anyhow::Error>(())}.await;if let Err(error)=result{let _=u.send(UiEvent::Error(error.to_string())).await;}});}},
                     command=>{
                         let Ok(permit)=slots.clone().try_acquire_owned()else{ui.send(UiEvent::Error("処理中です。少し待ってから再試行してください。".into())).await?;continue;};
                         let c=client.clone();let u=ui.clone();let s=session.clone();let a=active.clone();let p=playback.clone();
@@ -299,7 +361,7 @@ async fn run(
             }
         }
     }
-    drop(recorder);
+    drop(capture);
     playback.stop();
     if let Some(id) = active.lock().await.clone() {
         let _ = client
@@ -318,8 +380,8 @@ async fn run(
 fn check_available(command: &ClientCommand, available: Option<&ServerCapabilities>) -> Result<()> {
     let (text, record, speech, actions) = match command {
         ClientCommand::Chat { speak, .. } => (true, false, *speak, false),
-        ClientCommand::StartRecording => (true, true, false, false),
-        ClientCommand::FinishRecording { speak, .. } => (true, true, *speak, false),
+        ClientCommand::SetMicrophone(true) => (true, true, false, false),
+        ClientCommand::SetSpeechOutput(true) => (false, false, true, false),
         ClientCommand::Invoke { .. } => (false, false, false, true),
         _ => return Ok(()),
     };
@@ -332,7 +394,7 @@ fn check_available(command: &ClientCommand, available: Option<&ServerCapabilitie
                 .unwrap_or("対話機能を利用できません。")
         );
     }
-    if record && !cap.transcription {
+    if record && (!cap.transcription) {
         bail!("音声認識を利用できません。サーバーの構成を確認してください。");
     }
     if speech && !cap.speech {
@@ -342,6 +404,26 @@ fn check_available(command: &ClientCommand, available: Option<&ServerCapabilitie
         bail!("拡張操作を利用できません。");
     }
     Ok(())
+}
+
+fn reconcile_voice_capabilities(
+    capabilities: &ServerCapabilities,
+    capture: &mut Option<VoiceCapture>,
+    microphone_epoch: &mut u64,
+    playback: &PlaybackController,
+    speech_enabled: &AtomicBool,
+) -> (bool, bool) {
+    let microphone_off = !capabilities.text_chat || !capabilities.transcription;
+    if microphone_off {
+        *microphone_epoch += 1;
+        drop(capture.take());
+    }
+    let speech_off = !capabilities.speech;
+    if speech_off {
+        speech_enabled.store(false, Ordering::Release);
+        playback.stop();
+    }
+    (microphone_off, speech_off)
 }
 async fn send_chat(
     client: &ApiClient,
@@ -476,8 +558,8 @@ async fn handle(
 mod tests {
     use super::*;
     #[test]
-    fn disabled_or_unknown_capabilities_block_chat_and_recording_but_not_management() {
-        assert!(check_available(&ClientCommand::StartRecording, None).is_err());
+    fn disabled_or_unknown_capabilities_block_chat_and_voice_but_not_management() {
+        assert!(check_available(&ClientCommand::SetMicrophone(true), None).is_err());
         assert!(check_available(&ClientCommand::Refresh, None).is_ok());
         let mut capabilities = ServerCapabilities {
             protocol_major: 1,
@@ -488,21 +570,15 @@ mod tests {
             actions: false,
             reason: Some("dialogue disabled".into()),
         };
-        assert!(check_available(&ClientCommand::StartRecording, Some(&capabilities)).is_err());
+        assert!(check_available(&ClientCommand::SetMicrophone(true), Some(&capabilities)).is_err());
         capabilities.text_chat = true;
-        assert!(check_available(&ClientCommand::StartRecording, Some(&capabilities)).is_ok());
+        assert!(check_available(&ClientCommand::SetMicrophone(true), Some(&capabilities)).is_ok());
         capabilities.transcription = false;
-        assert!(
-            check_available(
-                &ClientCommand::FinishRecording {
-                    mode: DialogueMode::Auto,
-                    speak: false
-                },
-                Some(&capabilities)
-            )
-            .is_err()
-        );
+        assert!(check_available(&ClientCommand::SetMicrophone(true), Some(&capabilities)).is_err());
         capabilities.speech = false;
+        assert!(
+            check_available(&ClientCommand::SetSpeechOutput(true), Some(&capabilities)).is_err()
+        );
         assert!(
             check_available(
                 &ClientCommand::Chat {

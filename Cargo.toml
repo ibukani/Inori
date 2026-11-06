@@ -47,6 +47,8 @@ tower-http = { version = "0.6", features = ["limit", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+earshot = "=1.2.2"
+sonora = "=0.2.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,4 +1,5 @@
-# External engines are opt-in. Keep mock configured when opening existing demo data.
+# GroqCloud is configured for text inference. Set GROQ_API_KEY before starting the server.
+# Keep mock configured so existing demo data remains loadable and can be switched back.
 extensions = []
 
 [character]
@@ -6,7 +7,7 @@ id = "inori"
 name = "Inori"
 persona = "好奇心があり親しみやすい。相手のことを少しずつ知り、自分の興味も持つ。推測を断定せず、実行していないことを体験談にしない。"
 revision = 0
-active_provider = "mock"
+active_provider = "groq"
 
 [autonomy]
 enabled = true
@@ -21,6 +22,15 @@ kind = "mock"
 model = "deterministic-demo"
 allow_private = true
 
+[[providers]]
+id = "groq"
+kind = "compatible_http"
+base_url = "https://api.groq.com/openai/v1"
+model = "qwen/qwen3.8-27b"
+api_key_env = "GROQ_API_KEY"
+cloud = true
+allow_private = true
+
 # Uncomment only after installing an engine and a model on the chosen machine.
 # [[providers]]
 # id = "home-ollama"
@@ -33,15 +43,6 @@ allow_private = true
 # max_output_tokens = 384
 # timeout_seconds = 60
 # thinking = false # Optional: only for engines/models that support this Ollama option.
-
-# [[providers]]
-# id = "cloud"
-# kind = "compatible_http"
-# base_url = "https://YOUR_CONFIGURED_PROVIDER/v1"
-# model = "YOUR_MODEL"
-# api_key_env = "INORI_PROVIDER_KEY"
-# cloud = true
-# allow_private = false
 
 [voice]
 # whisper_url = "http://127.0.0.1:8080"

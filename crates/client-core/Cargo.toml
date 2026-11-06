@@ -21,6 +21,8 @@ futures-util.workspace = true
 bytes.workspace = true
 hound.workspace = true
 cpal.workspace = true
+earshot.workspace = true
+sonora.workspace = true
 inori-protocol = { path = "../protocol" }
 inori-domain = { path = "../domain" }
 

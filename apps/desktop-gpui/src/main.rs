@@ -20,8 +20,6 @@ struct Args {
     #[arg(long)]
     insecure_loopback: bool,
     #[arg(long)]
-    model_pack: Option<PathBuf>,
-    #[arg(long)]
     audio_devices: bool,
     #[arg(long)]
     probe_seconds: Option<u64>,
@@ -55,9 +53,6 @@ fn main() -> Result<()> {
         if config.server_url.starts_with("http:") {
             config.certificate_file = None;
         }
-    }
-    if args.model_pack.is_some() {
-        config.model_pack = args.model_pack;
     }
     #[cfg(any(windows, target_os = "macos"))]
     {

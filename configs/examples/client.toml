@@ -3,4 +3,3 @@ server_url = "https://localhost:9473"
 token_file = 'C:\Users\YOUR_NAME\AppData\Local\Inori\Inori\data\owner.token'
 certificate_file = 'C:\Users\YOUR_NAME\AppData\Local\Inori\Inori\data\server.pem'
 insecure_loopback = false
-# model_pack = 'C:\path\to\your\pack.json'
