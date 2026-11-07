@@ -11,7 +11,7 @@
 | R03 | user | クラウド、RTX3070級PC、メモリの多いMacへAIの処理を切り替える | provider adapter / model-switch tests |
 | R04 | user | 基本人格を保ち、好み・記憶・距離感を自動適応する。確認・修正・取り消しを行える | domain / storage-sqlite / memory history |
 | R05 | user | 自宅サーバーは常時稼働し、画面の終了で人格や活動が消えない | server / persisted state / scheduler |
-| R06 | user | Windows、8GB RAM、専用GPUなし。自宅LAN/VPNから接続 | desktop-gpui / TLS / device auth / hardware gate |
+| R06 | user | Windows、8GB RAM、専用GPUなし。自宅LANから簡単に接続し、必要に応じて一般のインターネットからも接続する | desktop-gpui / LAN discovery / TLS / device auth / internet access |
 | R07 | user | 拡張・対象・操作ごとに権限を設定する | permissions / operation ledger |
 | R08 | user | 初期は信頼済みの第三者製拡張。未信頼コードの強い隔離は対象外 | extension-host / trust documentation |
 | R09 | user | 初期は会話・時刻・在席。画面・カメラ・配信・家電は後続 | runtime / client-core |
@@ -28,6 +28,7 @@
 | R20 | user | 利用開始と開発のセットアップを共通化する。Windowsアプリは初回画面、Windows/macOS/Linuxサーバーは対話式。展開型配布、端末別接続ファイル、選択式のOS起動時常駐を提供し、今後のアプリにも再利用する | app-support / server setup / application manifest / ADR 0006 |
 | R21 | user | 好奇心・率直さを強く、遊び好きで最初から気軽な友人とし、特定の趣味は固定しない。人格の伝わる会話、興味の継続、自発発話を一段階ずつ仕上げ、各段階で人間の作品を参考にした実AI比較と本人の会話確認を行う | dialogue / memory / autonomy / ADR 0007 / character-continuity |
 | R22 | user | AIの性能差を受け入れ、将来の負債になる禁止プロンプトや補正を極力追加せず、実装で直せる問題を修正する。最小限の応答方針を残し、Autoの深さはモデルの設定上限内で任せる。実装の合否とモデルの会話品質を分ける | dialogue / review tools / ADR 0008 |
+| R23 | user | 同じ家のPCはデスクトップアプリだけで簡単に接続し、宅内経路を自動選択する。一般インターネットへの直接接続はサーバーから簡単にON/OFFし、宅内接続を維持する | app-support / server network access / connection bundle v2 |
 | D01 | design | Rust + Tokio + Axum、SQLx + SQLite | server / storage-sqlite |
 | D02 | design | R17に従いRust + GPUIで継続開発する。対象環境での適合性合格を本採用の条件とする | desktop-gpui / GPUI gate / ADR 0004 |
 | D03 | design | 一つの私有Gitリポジトリ内の複数プロジェクト | Cargo workspace |
@@ -47,6 +48,6 @@ AIの自己申告や反復を根拠に、推測を確認済み情報へ昇格し
 
 ## 初期対象外
 
-複数ユーザー、プラグインストア、未信頼コードの安全な実行、インターネット一般公開、
+複数ユーザー、プラグインストア、未信頼コードの安全な実行、
 Mac版GUI、Live2D/VRM本体、画面・カメラ認識、実際のPC/家電操作。
 Live2Dの無料サンプルは後段候補とし、モデル素材とSDKの条件を別々に確認する。

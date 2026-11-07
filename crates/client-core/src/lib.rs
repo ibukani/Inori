@@ -13,9 +13,18 @@ use reqwest::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{Connector, tungstenite::client::IntoClientRequest};
+use tokio_tungstenite::{
+    Connector, WebSocketStream,
+    tungstenite::{client::IntoClientRequest, handshake::client::Response},
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -24,6 +33,15 @@ pub struct ApiClient {
     token: String,
     http: reqwest::Client,
     tls: Option<Arc<rustls::ClientConfig>>,
+    config: ClientConfig,
+    local_route: Arc<tokio::sync::RwLock<Option<LocalRoute>>>,
+    use_local_route: Arc<AtomicBool>,
+}
+#[derive(Clone)]
+struct LocalRoute {
+    target: SocketAddr,
+    http: reqwest::Client,
+    base: String,
 }
 impl ApiClient {
     pub fn new(config: &ClientConfig) -> Result<Self> {
@@ -55,7 +73,44 @@ impl ApiClient {
             token,
             http,
             tls,
+            config: config.clone(),
+            local_route: Arc::new(tokio::sync::RwLock::new(None)),
+            use_local_route: Arc::new(AtomicBool::new(false)),
         })
+    }
+    async fn active_route(&self) -> (reqwest::Client, String) {
+        if self.use_local_route.load(Ordering::Acquire)
+            && let Some(route) = self.local_route.read().await.as_ref()
+        {
+            return (route.http.clone(), route.base.clone());
+        }
+        (self.http.clone(), self.base.clone())
+    }
+    async fn set_local_route(&self, target: SocketAddr) -> Result<()> {
+        let http = inori_app_support::connection_http_via(
+            &self.config,
+            std::time::Duration::from_secs(120),
+            Some(target),
+        )?;
+        let base = inori_app_support::url_via(&self.config.server_url, Some(target))?;
+        *self.local_route.write().await = Some(LocalRoute { target, http, base });
+        Ok(())
+    }
+    pub async fn prefer_lan_if_available(&self) {
+        let Some(path) = &self.config.certificate_file else {
+            return;
+        };
+        let Ok(pem) = std::fs::read(path) else {
+            return;
+        };
+        let Ok(fingerprint) = inori_app_support::certificate_fingerprint(&pem) else {
+            return;
+        };
+        if let Ok(Some(target)) = inori_app_support::discovery::discover_local(&fingerprint).await
+            && self.set_local_route(target).await.is_ok()
+        {
+            self.use_local_route.store(true, Ordering::Release);
+        }
     }
     pub async fn call<T: Serialize + ?Sized>(
         &self,
@@ -63,14 +118,17 @@ impl ApiClient {
         path: &str,
         body: Option<&T>,
     ) -> Result<Value> {
-        let mut request = self.http.request(method, format!("{}{path}", self.base));
+        let (http, base) = self.active_route().await;
+        let mut request = http.request(method, format!("{base}{path}"));
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!(inori_app_support::connection_error(&e)))?;
+        let response = request.send().await.map_err(|e| {
+            if self.use_local_route.load(Ordering::Acquire) {
+                self.use_local_route.store(false, Ordering::Release);
+            }
+            anyhow::anyhow!(inori_app_support::connection_error(&e))
+        })?;
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             bail!("端末認証が失効または無効です。接続用ファイルを再発行してください");
@@ -98,12 +156,17 @@ impl ApiClient {
         )?)
     }
     pub async fn availability(&self) -> Result<ServerCapabilities> {
-        let response = self
-            .http
-            .get(format!("{}/v1/capabilities", self.base))
+        let (http, base) = self.active_route().await;
+        let response = http
+            .get(format!("{base}/v1/capabilities"))
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!(inori_app_support::connection_error(&e)))?;
+            .map_err(|e| {
+                if self.use_local_route.load(Ordering::Acquire) {
+                    self.use_local_route.store(false, Ordering::Release);
+                }
+                anyhow::anyhow!(inori_app_support::connection_error(&e))
+            })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             // Previous v1 servers support text but cannot advertise voice availability.
             return Ok(ServerCapabilities {
@@ -124,22 +187,34 @@ impl ApiClient {
         )?)
     }
     pub async fn bytes(&self, id: &str) -> Result<Vec<u8>> {
-        let response = self
-            .http
-            .get(format!("{}/v1/resources/{id}", self.base))
+        let (http, base) = self.active_route().await;
+        let response = http
+            .get(format!("{base}/v1/resources/{id}"))
             .send()
-            .await?
+            .await
+            .map_err(|e| {
+                if self.use_local_route.load(Ordering::Acquire) {
+                    self.use_local_route.store(false, Ordering::Release);
+                }
+                anyhow::anyhow!(inori_app_support::connection_error(&e))
+            })?
             .error_for_status()?;
         bounded_body(response, 16 * 1024 * 1024).await
     }
     pub async fn upload_wav(&self, bytes: Vec<u8>) -> Result<String> {
-        let response = self
-            .http
-            .post(format!("{}/v1/resources?audience=private", self.base))
+        let (http, base) = self.active_route().await;
+        let response = http
+            .post(format!("{base}/v1/resources?audience=private"))
             .header("Content-Type", "audio/wav")
             .body(bytes)
             .send()
-            .await?
+            .await
+            .map_err(|e| {
+                if self.use_local_route.load(Ordering::Acquire) {
+                    self.use_local_route.store(false, Ordering::Release);
+                }
+                anyhow::anyhow!(inori_app_support::connection_error(&e))
+            })?
             .error_for_status()?;
         let value: Value = response.json().await?;
         Ok(value
@@ -154,46 +229,39 @@ impl ApiClient {
         output: mpsc::Sender<EventEnvelope>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let mut url = reqwest::Url::parse(&self.base)?;
-        url.set_scheme(if self.base.starts_with("https:") {
-            "wss"
-        } else {
-            "ws"
-        })
-        .map_err(|_| anyhow::anyhow!("invalid WebSocket URL"))?;
-        url.set_path("/v1/events");
-        url.query_pairs_mut().append_pair("session_id", session);
-        let mut request = url.as_str().into_client_request()?;
-        let mut header = HeaderValue::from_str(&format!("Bearer {}", self.token))?;
-        header.set_sensitive(true);
-        request.headers_mut().insert(AUTHORIZATION, header);
-        let connector = self.tls.clone().map(Connector::Rustls);
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
-                .await
-                .map_err(|error| {
-                    use tokio_tungstenite::tungstenite::Error;
-                    match error {
-                        Error::Http(response)
-                            if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
-                        {
-                            anyhow::anyhow!(
-                                "端末認証が失効または無効です。接続用ファイルを再発行してください"
-                            )
-                        }
-                        Error::Http(response)
-                            if response.status() == reqwest::StatusCode::FORBIDDEN =>
-                        {
-                            anyhow::anyhow!("この端末には接続先を利用する権限がありません")
-                        }
-                        Error::Tls(_) => anyhow::anyhow!(
-                            "証明書が一致しません。接続名と証明書を確認して再ペアリングしてください"
-                        ),
-                        _ => anyhow::anyhow!(
-                            "サーバーへ接続できません。起動状態・URL・LAN/VPNを確認してください"
-                        ),
-                    }
-                })?;
+        if !self.use_local_route.load(Ordering::Acquire) {
+            self.prefer_lan_if_available().await;
+        }
+        let mut active_local = self.use_local_route.load(Ordering::Acquire);
+        let local_target = self
+            .local_route
+            .read()
+            .await
+            .as_ref()
+            .map(|route| route.target);
+        let mut result = self
+            .connect_events(session, active_local.then_some(local_target).flatten())
+            .await;
+        if result.is_err() && active_local {
+            active_local = false;
+            self.use_local_route.store(false, Ordering::Release);
+            result = self.connect_events(session, None).await;
+        }
+        if result.is_err() && !active_local {
+            if let Some(path) = &self.config.certificate_file
+                && let Ok(pem) = std::fs::read(path)
+                && let Ok(fingerprint) = inori_app_support::certificate_fingerprint(&pem)
+                && let Ok(Some(target)) =
+                    inori_app_support::discovery::discover_local(&fingerprint).await
+                && self.set_local_route(target).await.is_ok()
+            {
+                result = self.connect_events(session, Some(target)).await;
+                if result.is_ok() {
+                    self.use_local_route.store(true, Ordering::Release);
+                }
+            }
+        }
+        let (mut socket, _) = result.map_err(map_websocket_error)?;
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&ClientHello {
@@ -237,6 +305,71 @@ impl ApiClient {
                 tokio::select! {_=cancel.cancelled()=>return Ok(()),result=output.send(event)=>{result.context("event consumer closed")?;}}
             }
         }
+    }
+
+    async fn connect_events(
+        &self,
+        session: &str,
+        local_target: Option<SocketAddr>,
+    ) -> Result<(
+        WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Response,
+    )> {
+        let mut url = reqwest::Url::parse(&self.base)?;
+        url.set_scheme(if self.base.starts_with("https:") {
+            "wss"
+        } else {
+            "ws"
+        })
+        .map_err(|_| anyhow::anyhow!("invalid WebSocket URL"))?;
+        url.set_path("/v1/events");
+        if let Some(target) = local_target {
+            url.set_port(Some(target.port()))
+                .map_err(|_| anyhow::anyhow!("LAN connection port is invalid"))?;
+        }
+        url.query_pairs_mut().append_pair("session_id", session);
+        let mut request = url.as_str().into_client_request()?;
+        let mut header = HeaderValue::from_str(&format!("Bearer {}", self.token))?;
+        header.set_sensitive(true);
+        request.headers_mut().insert(AUTHORIZATION, header);
+        let connector = self.tls.clone().map(Connector::Rustls);
+        let connect = async {
+            if let Some(target) = local_target {
+                let stream = tokio::net::TcpStream::connect(target).await?;
+                Ok::<_, anyhow::Error>(
+                    tokio_tungstenite::client_async_tls_with_config(
+                        request, stream, None, connector,
+                    )
+                    .await?,
+                )
+            } else {
+                Ok::<_, anyhow::Error>(
+                    tokio_tungstenite::connect_async_tls_with_config(
+                        request, None, false, connector,
+                    )
+                    .await?,
+                )
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), connect)
+            .await
+            .context("connection timed out")?
+    }
+}
+
+fn map_websocket_error(error: anyhow::Error) -> anyhow::Error {
+    use tokio_tungstenite::tungstenite::Error;
+    match error.downcast_ref::<Error>() {
+        Some(Error::Http(response)) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+            anyhow::anyhow!("端末認証が失効または無効です。接続用ファイルを再発行してください")
+        }
+        Some(Error::Http(response)) if response.status() == reqwest::StatusCode::FORBIDDEN => {
+            anyhow::anyhow!("この端末には接続先を利用する権限がありません")
+        }
+        Some(Error::Tls(_)) => anyhow::anyhow!(
+            "証明書が一致しません。接続名と証明書を確認して再ペアリングしてください"
+        ),
+        _ => anyhow::anyhow!("サーバーへ接続できません。起動状態・URL・LANを確認してください"),
     }
 }
 async fn bounded_body(response: reqwest::Response, max: usize) -> Result<Vec<u8>> {

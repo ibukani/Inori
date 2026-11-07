@@ -17,6 +17,26 @@ export interface ConnectionBundle {
   app_id: string;
   token: string;
 }
+export interface ConnectionBundleV2 {
+  schema_version: number;
+  server_url: string;
+  endpoints: Array<ConnectionEndpoint>;
+  certificate_pem: string;
+  device_id: string;
+  app_id: string;
+  token: string;
+}
+export interface ConnectionEndpoint {
+  kind: ConnectionEndpointKind;
+  url: string | null;
+}
+export type ConnectionEndpointKind = "lan_discovery" | "direct" | "relay";
+export interface NetworkAccessUpdate {
+  internet_enabled: boolean;
+}
+export interface NetworkAccessState {
+  internet_enabled: boolean;
+}
 export type Audience = "private" | "public";
 export type DialogueMode = "auto" | "quick" | "deliberate";
 export interface MediaRef {

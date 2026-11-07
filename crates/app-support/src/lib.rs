@@ -1,6 +1,10 @@
 //! Shared application setup. No GUI, audio devices, character state, or server runtime.
+pub mod discovery;
 use anyhow::{Context, Result, bail};
-use inori_protocol::{ConnectionBundle, ServerCapabilities};
+use inori_protocol::{
+    ConnectionBundle, ConnectionBundleV2, ConnectionEndpoint, ConnectionEndpointKind,
+    ServerCapabilities,
+};
 use reqwest::{Client, StatusCode, header::HeaderValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -219,32 +223,145 @@ pub fn save_client_config(path: &Path, config: &ClientConfig) -> Result<()> {
     write_private(path, toml::to_string_pretty(&config)?.as_bytes(), true)
 }
 
-pub fn read_bundle(path: &Path, app_id: &str) -> Result<ConnectionBundle> {
-    let bundle: ConnectionBundle = serde_json::from_slice(&read_limited(path, 64 * 1024)?)
-        .context("接続用ファイルの形式を確認してください")?;
-    validate_bundle(&bundle, app_id)?;
-    Ok(bundle)
+#[derive(Clone)]
+pub struct ImportedConnection {
+    pub schema_version: u64,
+    pub server_url: String,
+    pub endpoints: Vec<ConnectionEndpoint>,
+    pub certificate_pem: String,
+    pub device_id: String,
+    pub app_id: String,
+    pub token: String,
 }
 
-pub fn validate_bundle(bundle: &ConnectionBundle, app_id: &str) -> Result<()> {
+pub fn read_bundle(path: &Path, app_id: &str) -> Result<ImportedConnection> {
+    let bytes = read_limited(path, 64 * 1024)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("接続用ファイルの形式を確認してください")?;
+    let version = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .context("接続用ファイルの版を確認してください")?;
+    match version {
+        1 => {
+            let bundle: ConnectionBundle =
+                serde_json::from_value(value).context("接続用ファイルの形式を確認してください")?;
+            validate_bundle(&bundle, app_id)?;
+            Ok(ImportedConnection {
+                schema_version: 1,
+                server_url: bundle.server_url.clone(),
+                endpoints: vec![
+                    ConnectionEndpoint {
+                        kind: ConnectionEndpointKind::LanDiscovery,
+                        url: None,
+                    },
+                    ConnectionEndpoint {
+                        kind: ConnectionEndpointKind::Direct,
+                        url: Some(bundle.server_url.clone()),
+                    },
+                ],
+                certificate_pem: bundle.certificate_pem,
+                device_id: bundle.device_id,
+                app_id: bundle.app_id,
+                token: bundle.token,
+            })
+        }
+        2 => {
+            let bundle: ConnectionBundleV2 =
+                serde_json::from_value(value).context("接続用ファイルの形式を確認してください")?;
+            validate_bundle_v2(&bundle, app_id)?;
+            Ok(ImportedConnection {
+                schema_version: 2,
+                server_url: bundle.server_url,
+                endpoints: bundle.endpoints,
+                certificate_pem: bundle.certificate_pem,
+                device_id: bundle.device_id,
+                app_id: bundle.app_id,
+                token: bundle.token,
+            })
+        }
+        _ => bail!("接続用ファイルの版に対応していません"),
+    }
+}
+
+fn validate_bundle_fields(
+    server_url: &str,
+    certificate_pem: &str,
+    device_id: &str,
+    app_id_value: &str,
+    token: &str,
+    app_id: &str,
+) -> Result<()> {
     validate_app_id(app_id)?;
-    if bundle.schema_version != 1
-        || bundle.app_id != app_id
-        || bundle.device_id.is_empty()
-        || bundle.device_id.len() > 128
-        || !(16..=256).contains(&bundle.token.len())
-        || !bundle
-            .token
+    if app_id_value != app_id
+        || device_id.is_empty()
+        || device_id.len() > 128
+        || !(16..=256).contains(&token.len())
+        || !token
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
     {
         bail!("接続用ファイルの版・対象アプリ・端末認証情報が一致しません");
     }
-    validate_server_url(&bundle.server_url, false)?;
-    reqwest::Certificate::from_pem(bundle.certificate_pem.as_bytes())
+    validate_server_url(server_url, false)?;
+    reqwest::Certificate::from_pem(certificate_pem.as_bytes())
         .context("公開証明書を読み込めません")?;
-    if bundle.certificate_pem.contains("PRIVATE KEY") {
+    if certificate_pem.contains("PRIVATE KEY") {
         bail!("接続用ファイルに秘密鍵を含められません");
+    }
+    Ok(())
+}
+
+pub fn validate_bundle(bundle: &ConnectionBundle, app_id: &str) -> Result<()> {
+    if bundle.schema_version != 1 {
+        bail!("接続用ファイルの版に対応していません");
+    }
+    validate_bundle_fields(
+        &bundle.server_url,
+        &bundle.certificate_pem,
+        &bundle.device_id,
+        &bundle.app_id,
+        &bundle.token,
+        app_id,
+    )
+}
+
+pub fn validate_bundle_v2(bundle: &ConnectionBundleV2, app_id: &str) -> Result<()> {
+    if bundle.schema_version != 2 || bundle.endpoints.is_empty() || bundle.endpoints.len() > 8 {
+        bail!("接続用ファイルの版・経路情報が一致しません");
+    }
+    validate_bundle_fields(
+        &bundle.server_url,
+        &bundle.certificate_pem,
+        &bundle.device_id,
+        &bundle.app_id,
+        &bundle.token,
+        app_id,
+    )?;
+    let mut direct = false;
+    let mut lan_discovery = false;
+    for endpoint in &bundle.endpoints {
+        match endpoint.kind {
+            ConnectionEndpointKind::LanDiscovery if endpoint.url.is_none() => {
+                lan_discovery = true;
+            }
+            ConnectionEndpointKind::LanDiscovery => {
+                bail!("LAN自動検出経路にURLは指定できません")
+            }
+            ConnectionEndpointKind::Direct | ConnectionEndpointKind::Relay => {
+                let url = endpoint
+                    .url
+                    .as_deref()
+                    .context("接続経路のURLがありません")?;
+                validate_server_url(url, false)?;
+                if endpoint.kind == ConnectionEndpointKind::Direct && url == bundle.server_url {
+                    direct = true;
+                }
+            }
+        }
+    }
+    if !direct || !lan_discovery {
+        bail!("接続用ファイルに直接接続先またはLAN自動検出経路がありません");
     }
     Ok(())
 }
@@ -291,11 +408,36 @@ impl PreparedConnection {
 }
 
 pub fn prepare_bundle(
-    bundle: &ConnectionBundle,
+    bundle: &ImportedConnection,
     app_id: &str,
     directory: &Path,
 ) -> Result<PreparedConnection> {
-    validate_bundle(bundle, app_id)?;
+    if bundle.schema_version == 1 {
+        validate_bundle(
+            &ConnectionBundle {
+                schema_version: 1,
+                server_url: bundle.server_url.clone(),
+                certificate_pem: bundle.certificate_pem.clone(),
+                device_id: bundle.device_id.clone(),
+                app_id: bundle.app_id.clone(),
+                token: bundle.token.clone(),
+            },
+            app_id,
+        )?;
+    } else {
+        validate_bundle_v2(
+            &ConnectionBundleV2 {
+                schema_version: bundle.schema_version,
+                server_url: bundle.server_url.clone(),
+                endpoints: bundle.endpoints.clone(),
+                certificate_pem: bundle.certificate_pem.clone(),
+                device_id: bundle.device_id.clone(),
+                app_id: bundle.app_id.clone(),
+                token: bundle.token.clone(),
+            },
+            app_id,
+        )?;
+    }
     private_directory(directory)?;
     let temporary = tempfile::Builder::new()
         .prefix("connection-")
@@ -320,8 +462,25 @@ pub fn prepare_bundle(
 }
 
 pub fn connection_http(config: &ClientConfig, timeout: Duration) -> Result<Client> {
+    connection_http_via(config, timeout, None)
+}
+
+pub fn url_via(server_url: &str, target: Option<std::net::SocketAddr>) -> Result<String> {
+    let mut url = validate_server_url(server_url, false)?;
+    if let Some(target) = target {
+        url.set_port(Some(target.port()))
+            .map_err(|_| anyhow::anyhow!("LAN接続ポートをURLへ設定できません"))?;
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+pub fn connection_http_via(
+    config: &ClientConfig,
+    timeout: Duration,
+    local_target: Option<std::net::SocketAddr>,
+) -> Result<Client> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    validate_server_url(&config.server_url, config.insecure_loopback)?;
+    let url = validate_server_url(&config.server_url, config.insecure_loopback)?;
     let bytes = read_limited(&config.token_file, 512)
         .context("端末トークンを読み込めません。接続用ファイルを取り込んでください")?;
     let token = std::str::from_utf8(&bytes)?.trim();
@@ -336,6 +495,10 @@ pub fn connection_http(config: &ClientConfig, timeout: Duration) -> Result<Clien
         .default_headers(headers)
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none());
+    if let Some(target) = local_target {
+        let host = url.host_str().context("server URL has no host")?;
+        builder = builder.resolve(host, target);
+    }
     if let Some(path) = &config.certificate_file {
         let pem = read_limited(path, 64 * 1024).context("サーバー証明書を読み込めません")?;
         builder = builder.tls_certs_only([reqwest::Certificate::from_pem(&pem)?]);
@@ -352,7 +515,7 @@ pub fn connection_error(error: &reqwest::Error) -> &'static str {
         return "この端末には接続先を利用する権限がありません";
     }
     if error.is_timeout() {
-        "接続がタイムアウトしました。サーバーの稼働とLAN/VPNを確認してください"
+        "接続がタイムアウトしました。サーバーの稼働と宅内LANまたは公開接続を確認してください"
     } else {
         use std::error::Error;
         let mut source = error.source();
@@ -367,12 +530,24 @@ pub fn connection_error(error: &reqwest::Error) -> &'static str {
 }
 
 pub async fn probe(config: &ClientConfig) -> Result<ServerCapabilities> {
-    let client = connection_http(config, Duration::from_secs(5))?;
+    let local_target = if let Some(path) = &config.certificate_file {
+        let pem = read_limited(path, 64 * 1024).context("サーバー証明書を読み込めません")?;
+        let fingerprint = certificate_fingerprint(&pem)?;
+        discovery::discover_local(&fingerprint).await?
+    } else {
+        None
+    };
+    probe_via(config, local_target).await
+}
+
+pub async fn probe_via(
+    config: &ClientConfig,
+    local_target: Option<std::net::SocketAddr>,
+) -> Result<ServerCapabilities> {
+    let client = connection_http_via(config, Duration::from_secs(5), local_target)?;
+    let base = url_via(&config.server_url, local_target)?;
     let mut response = client
-        .get(format!(
-            "{}/v1/capabilities",
-            config.server_url.trim_end_matches('/')
-        ))
+        .get(format!("{base}/v1/capabilities"))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!(connection_error(&e)))?;
@@ -448,9 +623,13 @@ mod tests {
     #[test]
     fn bundle_roundtrip_cancel_and_app_isolation() {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let bundle = ConnectionBundle {
+        let bundle = ImportedConnection {
             schema_version: 1,
             server_url: "https://localhost:9473".into(),
+            endpoints: vec![ConnectionEndpoint {
+                kind: ConnectionEndpointKind::LanDiscovery,
+                url: None,
+            }],
             certificate_pem: cert.cert.pem(),
             device_id: "synthetic".into(),
             app_id: "desktop".into(),
@@ -483,5 +662,54 @@ mod tests {
                 0o700
             );
         }
+    }
+
+    #[test]
+    fn imports_legacy_and_multiroute_connection_bundles() {
+        let cert = rcgen::generate_simple_self_signed(vec!["inori.example.test".into()]).unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let legacy_path = work.path().join("legacy.json");
+        let legacy = ConnectionBundle {
+            schema_version: 1,
+            server_url: "https://inori.example.test:9473".into(),
+            certificate_pem: cert.cert.pem(),
+            device_id: "synthetic-legacy-device".into(),
+            app_id: "desktop".into(),
+            token: "synthetic-legacy-token-123456".into(),
+        };
+        std::fs::write(&legacy_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let imported = read_bundle(&legacy_path, "desktop").unwrap();
+        assert_eq!(imported.schema_version, 1);
+        assert!(imported.endpoints.iter().any(|endpoint| {
+            endpoint.kind == ConnectionEndpointKind::LanDiscovery && endpoint.url.is_none()
+        }));
+
+        let v2_path = work.path().join("multi-route.json");
+        let v2 = ConnectionBundleV2 {
+            schema_version: 2,
+            server_url: "https://inori.example.test:9473".into(),
+            endpoints: vec![
+                ConnectionEndpoint {
+                    kind: ConnectionEndpointKind::LanDiscovery,
+                    url: None,
+                },
+                ConnectionEndpoint {
+                    kind: ConnectionEndpointKind::Direct,
+                    url: Some("https://inori.example.test:9473".into()),
+                },
+            ],
+            certificate_pem: cert.cert.pem(),
+            device_id: "synthetic-v2-device".into(),
+            app_id: "desktop".into(),
+            token: "synthetic-v2-token-123456789".into(),
+        };
+        std::fs::write(&v2_path, serde_json::to_vec(&v2).unwrap()).unwrap();
+        let imported = read_bundle(&v2_path, "desktop").unwrap();
+        assert_eq!(imported.schema_version, 2);
+        assert_eq!(imported.endpoints.len(), 2);
+
+        let mut invalid = v2;
+        invalid.endpoints[0].url = Some("https://spoofed.invalid".into());
+        assert!(validate_bundle_v2(&invalid, "desktop").is_err());
     }
 }

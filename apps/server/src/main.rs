@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use inori_domain::{Audience, Device};
 use inori_runtime::{Repository, SystemClock};
 use inori_server::{
-    App, load_extensions, resolve_config, router, selected_extensions, token_hash,
+    App, internet_router, load_extensions, resolve_config, router, selected_extensions, token_hash,
     validate_character,
 };
 use inori_storage_sqlite::SqliteRepository;
@@ -84,6 +84,23 @@ enum Command {
     RevokeDevice {
         id: String,
     },
+    Network {
+        #[command(subcommand)]
+        action: NetworkCommand,
+    },
+}
+#[derive(Clone, Subcommand)]
+enum NetworkCommand {
+    Status,
+    Internet {
+        #[command(subcommand)]
+        action: InternetCommand,
+    },
+}
+#[derive(Clone, Subcommand)]
+enum InternetCommand {
+    On,
+    Off,
 }
 fn data_directory() -> Result<PathBuf> {
     inori_app_support::server_data_directory()
@@ -135,6 +152,71 @@ where
         _=shutdown.cancelled()=>{let _=tokio::time::timeout(std::time::Duration::from_secs(5),&mut future).await;}
     }
     Ok(())
+}
+
+async fn serve_internet_listener(
+    address: SocketAddr,
+    tls: axum_server::tls_rustls::RustlsConfig,
+    app: Arc<App>,
+    mut enabled: tokio::sync::watch::Receiver<bool>,
+    shutdown: CancellationToken,
+) {
+    loop {
+        if !*enabled.borrow() {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                changed = enabled.changed() => if changed.is_err() { return },
+            }
+            continue;
+        }
+        let listener = match setup::bind_listener(address) {
+            Ok(listener) => listener,
+            Err(error) => {
+                tracing::error!(%address, %error, "internet listener could not bind");
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = enabled.changed() => if changed.is_err() { return },
+                }
+                continue;
+            }
+        };
+        tracing::info!(%address, "internet listener enabled");
+        let handle = axum_server::Handle::new();
+        let stop_handle = handle.clone();
+        let mut server = Box::pin(
+            axum_server::from_tcp_rustls(listener, tls.clone())
+                .handle(handle)
+                .serve(internet_router(app.clone()).into_make_service()),
+        );
+        loop {
+            tokio::select! {
+                result = &mut server => {
+                    if let Err(error) = result {
+                        tracing::error!(%address, %error, "internet listener stopped");
+                    }
+                    break;
+                }
+                changed = enabled.changed() => {
+                    if changed.is_err() {
+                        stop_handle.graceful_shutdown(Some(std::time::Duration::from_secs(3)));
+                        let _ = server.await;
+                        return;
+                    }
+                    if !*enabled.borrow() {
+                        tracing::info!(%address, "internet listener disabled");
+                        stop_handle.graceful_shutdown(Some(std::time::Duration::from_secs(3)));
+                        let _ = server.await;
+                        break;
+                    }
+                }
+                _ = shutdown.cancelled() => {
+                    stop_handle.graceful_shutdown(Some(std::time::Duration::from_secs(3)));
+                    let _ = server.await;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -201,8 +283,29 @@ async fn run(
     if let Some(listen) = args.listen {
         launch.listen = listen;
     }
+    if let Some(Command::Network { action }) = &args.command {
+        let desired = match action {
+            NetworkCommand::Status => None,
+            NetworkCommand::Internet {
+                action: InternetCommand::On,
+            } => Some(true),
+            NetworkCommand::Internet {
+                action: InternetCommand::Off,
+            } => Some(false),
+        };
+        let state = setup::set_or_read_network_access(&data, &launch, desired).await?;
+        println!(
+            "インターネット接続: {}",
+            if state.internet_enabled { "ON" } else { "OFF" }
+        );
+        return Ok(());
+    }
     let listen = launch.listen;
     args.tls_name.extend(launch.tls_names.clone());
+    let internet_enabled = setup::read_internet_access(&data)?;
+    if internet_enabled && launch.internet_url.is_none() {
+        bail!("外部接続がONですが公開URLが未設定です。setupで確認してください");
+    }
     let database = data.join("inori.sqlite");
     if let Some(Command::Backup { destination }) = &args.command {
         SqliteRepository::backup_file(&database, destination).await?;
@@ -232,6 +335,7 @@ async fn run(
                 let issued = setup::issue_over_https(
                     &data,
                     &launch.server_url,
+                    setup::local_target(&launch),
                     &inori_protocol::CreateDeviceRequest {
                         name: name.clone(),
                         audience: if *public {
@@ -247,15 +351,26 @@ async fn run(
                 inori_app_support::private_directory(&directory)?;
                 let path = directory.join(format!("{}.token", issued.device_id));
                 if let Err(error) = private_file(&path, issued.token.as_bytes()) {
-                    let _ = setup::revoke_over_https(&data, &launch.server_url, &issued.device_id)
-                        .await;
+                    let _ = setup::revoke_over_https(
+                        &data,
+                        &launch.server_url,
+                        setup::local_target(&launch),
+                        &issued.device_id,
+                    )
+                    .await;
                     return Err(error);
                 }
                 println!("Device token file: {}", path.display());
                 return Ok(());
             }
             Some(Command::RevokeDevice { id }) => {
-                setup::revoke_over_https(&data, &launch.server_url, id).await?;
+                setup::revoke_over_https(
+                    &data,
+                    &launch.server_url,
+                    setup::local_target(&launch),
+                    id,
+                )
+                .await?;
                 println!("Device revoked");
                 return Ok(());
             }
@@ -263,7 +378,7 @@ async fn run(
         }
     }
     if let Some(Command::Doctor { offline, engines }) = args.command {
-        setup::doctor(&data, &config, &launch, !offline).await?;
+        setup::doctor(&data, &config, &launch, !offline && !engines).await?;
         if engines {
             setup::check_engines(
                 &config,
@@ -285,9 +400,17 @@ async fn run(
         return setup::export_connection(
             &data,
             &config,
-            server.as_deref().unwrap_or(&launch.server_url),
-            app,
-            destination,
+            setup::ConnectionExportOptions {
+                server_url: server
+                    .as_deref()
+                    .or(launch.internet_url.as_deref())
+                    .unwrap_or(&launch.server_url),
+                control_url: &launch.server_url,
+                control_target: setup::local_target(&launch),
+                internet_configured: launch.internet_url.is_some(),
+                app_id: app,
+                destination,
+            },
             inori_protocol::CreateDeviceRequest {
                 name: name.clone(),
                 audience: if *public {
@@ -318,6 +441,9 @@ async fn run(
     inori_app_support::private_directory(&data)?;
     if args.insecure_loopback && !listen.ip().is_loopback() {
         bail!("unencrypted transport is restricted to loopback");
+    }
+    if args.insecure_loopback && launch.internet_url.is_some() {
+        bail!("インターネット接続にはTLSが必要です");
     }
     if let Some(Command::Restore { source }) = &args.command {
         if database.exists() {
@@ -371,11 +497,14 @@ async fn run(
         &credentials,
     )
     .await?;
+    let (internet_access, internet_access_receiver) = tokio::sync::watch::channel(internet_enabled);
     let app = Arc::new(App {
         service: service.clone(),
         extensions,
         data_dir: data.clone(),
         shutdown: shutdown.clone(),
+        internet_configured: launch.internet_url.is_some(),
+        internet_access,
     });
     let routes = router(app.clone());
     let signal = shutdown.clone();
@@ -424,7 +553,46 @@ async fn run(
         let certificate = data.join("server.pem");
         let key = data.join("server.key");
         setup::ensure_certificate(&data, &args.tls_name)?;
+        let certificate_pem = inori_app_support::read_limited(&certificate, 65536)?;
+        inori_app_support::verify_certificate_name(&certificate_pem, &launch.server_url)?;
+        if let Some(internet_url) = &launch.internet_url {
+            inori_app_support::verify_certificate_name(&certificate_pem, internet_url)?;
+        }
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&certificate, &key).await?;
+        if !listen.ip().is_loopback() {
+            let fingerprint = inori_app_support::certificate_fingerprint(&certificate_pem)?;
+            let discovery_shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                if let Err(error) = inori_app_support::discovery::serve_discovery(
+                    listen.port(),
+                    fingerprint,
+                    discovery_shutdown,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "LAN discovery is unavailable");
+                }
+            });
+        }
+        if launch.internet_url.is_some() {
+            let internet_access_v6 = internet_access_receiver.clone();
+            tokio::spawn(serve_internet_listener(
+                launch.internet_listen,
+                tls.clone(),
+                app.clone(),
+                internet_access_receiver,
+                shutdown.clone(),
+            ));
+            if let Some(address) = launch.internet_listen_v6 {
+                tokio::spawn(serve_internet_listener(
+                    address,
+                    tls.clone(),
+                    app.clone(),
+                    internet_access_v6,
+                    shutdown.clone(),
+                ));
+            }
+        }
         let handle = axum_server::Handle::new();
         let signal = shutdown.clone();
         let stop = handle.clone();

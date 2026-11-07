@@ -8,7 +8,7 @@ use inori_inference_providers::HttpProvider;
 use inori_runtime::{
     Clock, GenerationContext, InferenceProvider, ProviderProfile, Repository, SystemClock,
 };
-use inori_server::{App, router, token_hash};
+use inori_server::{App, internet_router, router, token_hash};
 use inori_storage_sqlite::SqliteRepository;
 use serde_json::{Value, json};
 use std::{
@@ -69,6 +69,8 @@ async fn setup() -> (tempfile::TempDir, Router, Arc<App>) {
         extensions: BTreeMap::new(),
         data_dir: temp.path().into(),
         shutdown: CancellationToken::new(),
+        internet_configured: false,
+        internet_access: tokio::sync::watch::channel(false).0,
     });
     (temp, router(app.clone()), app)
 }
@@ -83,6 +85,37 @@ fn request(method: &str, path: &str, token: &str, body: Value) -> Request<Body> 
 }
 async fn value(response: axum::response::Response) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn internet_router_omits_local_only_network_controls() {
+    let (_temp, local_routes, app) = setup().await;
+    let local_state = local_routes
+        .clone()
+        .oneshot(request("GET", "/v1/network/access", OWNER, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(local_state.status(), StatusCode::OK);
+    assert_eq!(value(local_state).await["internet_enabled"], false);
+
+    let denied_toggle = local_routes
+        .clone()
+        .oneshot(request(
+            "PUT",
+            "/v1/network/access",
+            OWNER,
+            json!({"internet_enabled":true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied_toggle.status(), StatusCode::BAD_REQUEST);
+
+    let public_routes = internet_router(app);
+    let absent = public_routes
+        .oneshot(request("GET", "/v1/network/access", OWNER, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(absent.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

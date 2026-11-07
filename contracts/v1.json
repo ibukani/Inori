@@ -32,6 +32,45 @@
       },
       "required": ["schema_version", "server_url", "certificate_pem", "device_id", "app_id", "token"]
     },
+    "ConnectionBundleV2": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 0 },
+        "server_url": { "type": "string" },
+        "endpoints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ConnectionEndpoint" },
+          "maxItems": 8
+        },
+        "certificate_pem": { "type": "string" },
+        "device_id": { "type": "string" },
+        "app_id": { "type": "string" },
+        "token": { "type": "string", "writeOnly": true }
+      },
+      "required": ["schema_version", "server_url", "endpoints", "certificate_pem", "device_id", "app_id", "token"]
+    },
+    "ConnectionEndpoint": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/ConnectionEndpointKind" },
+        "url": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      },
+      "required": ["kind", "url"]
+    },
+    "ConnectionEndpointKind": {
+      "type": "string",
+      "enum": ["lan_discovery", "direct", "relay"]
+    },
+    "NetworkAccessUpdate": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "internet_enabled": { "type": "boolean" } },
+      "required": ["internet_enabled"]
+    },
+    "NetworkAccessState": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "internet_enabled": { "type": "boolean" } },
+      "required": ["internet_enabled"]
+    },
     "Audience": {
       "type": "string",
       "enum": [

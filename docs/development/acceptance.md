@@ -28,13 +28,15 @@
 | 共通上限・中断・モジュール故障の処理 | 共有推論の上限、待機中の中断、別端末の中断拒否、準備失敗の逆順終了、拡張タイムアウト | 長時間の複合障害 |
 | 旧DBのコピー後だけ追加移行する | ロック競合・旧形式の単独backup・pre-schemaコピーの版を検証 | 運用環境での復旧訓練 |
 | 共通セットアップ・接続ファイル・展開型配布・選択式サーバー常駐（R20） | app-support、setup/doctor/export-connection/service、アプリ宣言、配布ツール。[Windows検証記録](gui-validation-2026-11-07.md)で設定・TLS認証・通常端末・ZIP照合・展開後起動を確認 | Mac/Linuxの実ビルド・導入、OSサービスの実登録・OS再起動・ログイン前稼働、開発ツールなしのクリーンOS |
+| 宅内LANを自動選択し、インターネット直接経路を簡単にON/OFFする（R23） | nonce付きUDP 9475探索と証明書指紋検査、LANを優先するHTTP/WebSocket経路、証明書ホスト名を保つループバック管理、既定OFFの別TCP 9474待受、接続用ファイルv2とv1取り込み。fmt・契約・境界・server/app-support Clippy・client-core/desktop型検査が成功。desktopはLinuxの未対応プラットフォーム分岐でunused警告3件 | 別PCのLAN接続、実ルーターのUDP/転送、公開DNS/DDNS、CGNAT、IPv6、ファイアウォール、証明書更新後の再ペアリング。[ADR 0009](../adr/0009-lan-and-internet-access.md) |
 
-R01〜R22の要件IDは [要件表](../requirements.md) が正本です。関連する実装は
+R01〜R23の要件IDは [要件表](../requirements.md) が正本です。関連する実装は
 `domain`（R04/R07/R11）、`runtime`（R01/R03/R05/R09/R10/R11）、
 `protocol`/SDK（R02/R08/R12）、`client-core`/GPUI（R06/R09/R10/R12/R17）、
 workspace/CI/ADR（R13）、単一チャット画面（R18）、クライアント音声制御（R19）へ分けています。
 module-api / composition / modulesとサーバーの起動元がR14〜R16を担当します。
 app-support・server setup/service・アプリ宣言・開発配布ツールがR20を担当します。
+LAN探索とクライアント経路選択、server network access、v2接続用ファイルがR23を担当します。
 
 テストの実体は [検証の配置](../../tests/README.md)、コマンドは [quickstart](quickstart.md#通常の検査)、
 UIの本採用条件は [GPUI採用ゲート](gpui-gate.md) を参照してください。

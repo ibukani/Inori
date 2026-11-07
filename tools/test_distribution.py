@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 import tarfile
 import inori
@@ -53,6 +54,15 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(entries["setup.sh"].mode, 0o755)
             self.assertEqual(entries["inori-server"].mode, 0o755)
             self.assertNotIn("setup.cmd", entries)
+
+    def test_update_passes_cross_target_to_license_collection(self):
+        app = inori.registry()["server"]
+        target = "x86_64-unknown-linux-gnu"
+        with patch.object(inori, "license_documents", return_value={}) as license_docs, \
+                patch.object(inori, "invoke") as invoke:
+            inori.update_local_server(app, self.executable, "test", "x86_64", "linux", target)
+        license_docs.assert_called_once_with(app, target)
+        invoke.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -168,6 +168,7 @@ async fn run(
     playback: PlaybackController,
 ) -> Result<()> {
     let client = Arc::new(ApiClient::new(&config)?);
+    client.prefer_lan_if_available().await;
     let session = Uuid::new_v4().to_string();
     let active = Arc::new(Mutex::new(None::<String>));
     let (stream_tx, mut stream_rx) = mpsc::channel(64);

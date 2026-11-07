@@ -32,6 +32,8 @@ pub struct App {
     pub extensions: BTreeMap<String, RegisteredExtension>,
     pub data_dir: PathBuf,
     pub shutdown: CancellationToken,
+    pub internet_configured: bool,
+    pub internet_access: tokio::sync::watch::Sender<bool>,
 }
 pub fn token_hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
@@ -83,6 +85,14 @@ fn audience(d: &Device, a: Audience) -> Result<()> {
 }
 
 pub fn router(app: Arc<App>) -> Router {
+    router_with(app, true, true)
+}
+
+pub fn internet_router(app: Arc<App>) -> Router {
+    router_with(app, false, false)
+}
+
+fn router_with(app: Arc<App>, local_management: bool, health: bool) -> Router {
     let protected = Router::new()
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/capabilities", get(capabilities))
@@ -110,17 +120,64 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/resources/{id}/transcribe", post(transcribe))
         .route("/v1/devices", get(devices).post(create_device))
         .route("/v1/devices/{id}", delete(revoke))
-        .route("/v1/backups", post(backup))
-        .route_layer(middleware::from_fn_with_state(app.clone(), authenticate));
-    Router::new()
-        .route(
+        .route("/v1/backups", post(backup));
+    let protected = if local_management {
+        protected.route(
+            "/v1/network/access",
+            get(network_access).put(set_network_access),
+        )
+    } else {
+        protected
+    }
+    .route_layer(middleware::from_fn_with_state(app.clone(), authenticate));
+    let router = Router::new().merge(protected);
+    let router = if health {
+        router.route(
             "/healthz",
             get(|| async { Json(json!({"status":"ok","protocol":"1.0"})) }),
         )
-        .merge(protected)
+    } else {
+        router
+    };
+    router
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(tower::limit::ConcurrencyLimitLayer::new(8))
         .with_state(app)
+}
+
+async fn network_access(
+    State(app): State<Arc<App>>,
+    Extension(device): Extension<Device>,
+) -> ApiResult<wire::NetworkAccessState> {
+    admin(&device)?;
+    Ok(Json(wire::NetworkAccessState {
+        internet_enabled: *app.internet_access.borrow(),
+    }))
+}
+
+async fn set_network_access(
+    State(app): State<Arc<App>>,
+    Extension(device): Extension<Device>,
+    Json(request): Json<wire::NetworkAccessUpdate>,
+) -> ApiResult<wire::NetworkAccessState> {
+    admin(&device)?;
+    if request.internet_enabled && !app.internet_configured {
+        return Err(anyhow::anyhow!(
+            "インターネットURLが未設定です。setupで公開URLを設定してください"
+        )
+        .into());
+    }
+    let state = wire::NetworkAccessState {
+        internet_enabled: request.internet_enabled,
+    };
+    let bytes = toml::to_string(&state)?;
+    inori_app_support::write_private(
+        &app.data_dir.join("network-access.toml"),
+        bytes.as_bytes(),
+        true,
+    )?;
+    app.internet_access.send_replace(request.internet_enabled);
+    Ok(Json(state))
 }
 async fn authenticate(State(app): State<Arc<App>>, mut r: Request, next: Next) -> Response {
     let token = r

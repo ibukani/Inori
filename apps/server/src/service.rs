@@ -537,7 +537,10 @@ pub async fn manage(command: ServiceCommand, data: &Path) -> Result<()> {
     if matches!(command, ServiceCommand::Start) {
         let data = data_directory()?;
         let launch = crate::setup::read_launch(&data)?;
-        let config = crate::setup::owner_config(&data, &launch.server_url);
+        let config = crate::setup::owner_config(
+            &data,
+            &format!("https://localhost:{}", launch.listen.port()),
+        );
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 if inori_app_support::probe(&config).await.is_ok() {

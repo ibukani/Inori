@@ -44,7 +44,7 @@ struct View {
     certificate: Entity<InputState>,
     settings_open: bool,
     config_destination: PathBuf,
-    candidate_bundle: Option<inori_protocol::ConnectionBundle>,
+    candidate_bundle: Option<support::ImportedConnection>,
     settings_busy: bool,
     microphone: bool,
     listening: bool,

@@ -7,7 +7,7 @@
 
 配布物を展開し、サーバーはWindowsの `setup.cmd` またはmacOS/Linuxの `./setup.sh` を実行する。
 Rust・Python・Node.jsは利用時に要求しない。最初は外部送信のないmockで確認できる。
-保存先、LAN/VPN接続、証明書へ登録する接続名、利用する既存エンジンを案内する。
+保存先、宅内LAN接続、証明書へ登録する接続名、利用する既存エンジンを案内する。インターネット接続は別途明示して設定する。
 クラウド、私的文脈の送信、無人クラウド推論、別PCへの私的音声送信は別々に明示設定する。
 
 非対話実行の例（配布物のディレクトリで実行）:
@@ -26,12 +26,32 @@ Rust・Python・Node.jsは利用時に要求しない。最初は外部送信の
 LANの例:
 
 ```powershell
-./inori-server.exe --data-dir C:\InoriData setup --non-interactive --lan --server-url https://home-server:9473
+./inori-server.exe --data-dir C:\InoriData setup --non-interactive --lan --server-url https://localhost:9473
 ```
 
-DNSやVPN内の名前解決を先に用意する。接続名変更で既存証明書を自動更新しない。
-名前・有効期限が一致しなければ元の接続名を使うか、証明書更新と再ペアリングを行う。
-LAN/VPN内から待受ポートへのファイアウォール許可が必要。ファイアウォール・ルーターは自動変更しない。
+新しいデスクトップアプリはUDP 9475のLAN検出でサーバーを探し、接続用ファイルに含む証明書の指紋が一致した場合だけ接続するため、各PCに `home-server` のDNS設定は不要。旧接続用ファイルも読み込める。サーバー自身の診断・管理CLIは証明書名を保ったままループバックへ接続するため、`home-server` の名前解決に依存しない。
+サーバー側でTCP 9473とUDP 9475を宅内LANから許可する。ファイアウォールは自動変更しない。
+
+### インターネット接続
+
+直接公開には到達可能な回線と自分の公開ホスト名またはDDNS名が必要。CGNATなどで着信できない回線では直接方式を利用できない。InoriはDNS/DDNS事業者やルーターを自動設定しない。
+
+```sh
+inori-server --data-dir /var/lib/inori setup --non-interactive --lan \
+  --server-url https://localhost:9473 \
+  --internet-url https://your-name.example:9474
+inori-server --data-dir /var/lib/inori network status
+inori-server --data-dir /var/lib/inori network internet on
+inori-server --data-dir /var/lib/inori network internet off
+```
+
+セットアップ後も外部接続はOFF。サーバーが起動している状態で所有者認証付きの `network internet on/off` を実行する。OFFにすると公開待受を閉じ、宅内LANの待受は維持する。ポート転送設定は残るが、転送先に待受がなくなる。
+
+IPv4ルーターでは、外部TCP 9474をサーバーのTCP 9474へ転送する。LANサービスのTCP 9473へ転送すると公開OFFを迂回するため、その設定は使わない。IPv6で直接公開する場合は公開DNSのAAAAレコードを設定し、サーバー側ファイアウォールでTCP 9474を許可する。LAN内の自動検出には引き続きUDP 9475を許可する。
+
+接続ファイルv2には公開URL・LAN自動検出経路・公開証明書・端末専用トークンが入る。証明書は接続ファイルを通じてピン留めし、端末トークンは証明書確認後に送る。ブラウザー向けの公開証明書は不要。既存証明書に公開URLの名前がない場合は、サーバー停止後に同じ `setup` を `--refresh-certificate` 付きで再実行する。以前の鍵・証明書は `.previous` に残る。更新後は各デスクトップで新しい接続用ファイルを取り込む。
+
+中継サービスの実装・選定はまだ含まない。直接着信できない回線向けの中継接続方式は、別途サービスを選んで追加する。
 
 既存Ollamaの例:
 
@@ -65,7 +85,7 @@ LAN/VPN内から待受ポートへのファイアウォール許可が必要。�
 既定はprivateの会話用端末で管理権限なし。管理アプリにだけ `--admin` を明示する。
 public端末は `--public`。publicとadminの組み合わせは拒否する。
 
-接続用ファイルはURL・公開証明書・アプリID・端末ID・端末トークンを含む。
+接続用ファイルはURL・（v2では宅内自動検出と接続経路）・公開証明書・アプリID・端末ID・端末トークンを含む。
 所有者トークンとサーバー秘密鍵は含めない。安全な経路で対象端末へ渡す。
 既存ファイルは上書きしない。再発行時には古い端末の失効も行う。
 

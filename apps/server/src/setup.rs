@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use inori_app_support::{self as support, ClientConfig};
-use inori_protocol::{ConnectionBundle, CreateDeviceRequest, CreateDeviceResponse};
+use inori_protocol::{
+    ConnectionBundle, ConnectionBundleV2, ConnectionEndpoint, ConnectionEndpointKind,
+    CreateDeviceRequest, CreateDeviceResponse, NetworkAccessState, NetworkAccessUpdate,
+};
 use inori_runtime::Repository;
 use inori_server::{ServerConfig, issue_device, resolve_config, validate_character};
 use inori_storage_sqlite::SqliteRepository;
@@ -21,6 +24,12 @@ pub struct SetupOptions {
     pub lan: bool,
     #[arg(long)]
     pub server_url: Option<String>,
+    #[arg(long)]
+    pub internet_url: Option<String>,
+    #[arg(long)]
+    pub internet_listen: Option<SocketAddr>,
+    #[arg(long)]
+    pub refresh_certificate: bool,
     #[arg(long, value_parser = ["mock", "ollama", "compatible_http"])]
     pub provider: Option<String>,
     #[arg(long)]
@@ -58,6 +67,18 @@ pub struct LaunchSettings {
     pub listen: SocketAddr,
     pub server_url: String,
     pub tls_names: Vec<String>,
+    #[serde(default)]
+    pub internet_url: Option<String>,
+    #[serde(default = "default_internet_listen")]
+    pub internet_listen: SocketAddr,
+    #[serde(default = "default_internet_listen_v6")]
+    pub internet_listen_v6: Option<SocketAddr>,
+}
+fn default_internet_listen() -> SocketAddr {
+    "0.0.0.0:9474".parse().unwrap()
+}
+fn default_internet_listen_v6() -> Option<SocketAddr> {
+    Some("[::]:9474".parse().unwrap())
 }
 impl Default for LaunchSettings {
     fn default() -> Self {
@@ -65,6 +86,9 @@ impl Default for LaunchSettings {
             listen: "127.0.0.1:9473".parse().unwrap(),
             server_url: "https://localhost:9473".into(),
             tls_names: vec![],
+            internet_url: None,
+            internet_listen: default_internet_listen(),
+            internet_listen_v6: default_internet_listen_v6(),
         }
     }
 }
@@ -78,6 +102,23 @@ pub fn read_launch(data: &Path) -> Result<LaunchSettings> {
     } else {
         Ok(LaunchSettings::default())
     }
+}
+
+pub fn bind_listener(address: SocketAddr) -> Result<std::net::TcpListener> {
+    let domain = if address.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+    socket.bind(&address.into())?;
+    socket.listen(128)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
 }
 
 pub fn load_config(path: Option<&Path>) -> Result<ServerConfig> {
@@ -152,6 +193,67 @@ pub fn ensure_certificate(data: &Path, names: &[String]) -> Result<()> {
     if let Err(error) = support::write_private(&cert, generated.cert.pem().as_bytes(), false) {
         let _ = std::fs::remove_file(&key);
         return Err(error);
+    }
+    Ok(())
+}
+
+pub fn refresh_certificate(data: &Path, names: &[String]) -> Result<()> {
+    let cert = data.join("server.pem");
+    let key = data.join("server.key");
+    let cert_backup = data.join("server.pem.previous");
+    let key_backup = data.join("server.key.previous");
+    for path in [&cert, &key] {
+        if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!("証明書・秘密鍵のシンボリックリンクは更新しません");
+        }
+    }
+    if cert.exists() != key.exists() {
+        bail!("証明書と秘密鍵の組が不完全です。自動再生成しません");
+    }
+    if cert_backup.exists() || key_backup.exists() {
+        bail!("以前の証明書バックアップが残っています。退避してから更新してください");
+    }
+    let mut all = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+    all.extend_from_slice(names);
+    all.sort();
+    all.dedup();
+    let generated = rcgen::generate_simple_self_signed(all)?;
+    let new_cert = data.join("server.pem.new");
+    let new_key = data.join("server.key.new");
+    support::write_private(
+        &new_key,
+        generated.signing_key.serialize_pem().as_bytes(),
+        false,
+    )?;
+    if let Err(error) = support::write_private(&new_cert, generated.cert.pem().as_bytes(), false) {
+        let _ = std::fs::remove_file(&new_key);
+        return Err(error);
+    }
+    let had_existing = cert.exists();
+    if had_existing {
+        std::fs::rename(&cert, &cert_backup)?;
+        if let Err(error) = std::fs::rename(&key, &key_backup) {
+            let _ = std::fs::rename(&cert_backup, &cert);
+            let _ = std::fs::remove_file(&new_cert);
+            let _ = std::fs::remove_file(&new_key);
+            return Err(error.into());
+        }
+    }
+    if let Err(error) = std::fs::rename(&new_key, &key) {
+        if had_existing {
+            let _ = std::fs::rename(&cert_backup, &cert);
+            let _ = std::fs::rename(&key_backup, &key);
+        }
+        let _ = std::fs::remove_file(&new_cert);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(&new_cert, &cert) {
+        let _ = std::fs::remove_file(&key);
+        if had_existing {
+            let _ = std::fs::rename(&cert_backup, &cert);
+            let _ = std::fs::rename(&key_backup, &key);
+        }
+        return Err(error.into());
     }
     Ok(())
 }
@@ -300,7 +402,7 @@ pub async fn run(
     launch.tls_names.extend(names);
     if interactive {
         options.lan = yes(
-            "別のPCからLAN/VPNで接続しますか",
+            "別のPCから宅内LANで接続しますか",
             options.lan || !launch.listen.ip().is_loopback(),
         )?;
     }
@@ -312,7 +414,7 @@ pub async fn run(
             Some(value) => value,
             None if interactive => prompt(
                 "接続するサーバーURL（証明書へ登録します）",
-                "https://home-server:9473",
+                "https://localhost:9473",
             )?,
             None => bail!("LAN設定には --server-url が必要です"),
         };
@@ -322,6 +424,26 @@ pub async fn run(
     } else if interactive && listen.is_none() {
         launch.listen = format!("127.0.0.1:{}", launch.listen.port()).parse()?;
         launch.server_url = format!("https://localhost:{}", launch.listen.port());
+    }
+    if let Some(address) = options.internet_listen {
+        launch.internet_listen = address;
+    }
+    if let Some(url) = options.internet_url.take() {
+        launch.internet_url = Some(url);
+    } else if interactive
+        && yes(
+            "インターネット接続用URLを設定しますか（ポート転送は後で設定します）",
+            launch.internet_url.is_some(),
+        )?
+    {
+        let default = launch
+            .internet_url
+            .as_deref()
+            .unwrap_or("https://inori.example.com:9474");
+        launch.internet_url = Some(prompt("公開URL", default)?);
+    }
+    if launch.internet_url.is_some() && launch.listen.ip().is_loopback() {
+        launch.listen = format!("0.0.0.0:{}", launch.listen.port()).parse()?;
     }
     let url = support::validate_server_url(&launch.server_url, false)?;
     if url.port_or_known_default() != Some(launch.listen.port()) {
@@ -333,6 +455,31 @@ pub async fn run(
             .trim_matches(['[', ']'])
             .to_owned(),
     );
+    if let Some(internet_url) = &launch.internet_url {
+        let internet = support::validate_server_url(internet_url, false)?;
+        if internet.port_or_known_default() != Some(launch.internet_listen.port()) {
+            bail!(
+                "公開URLのポートはインターネット待受ポート {} と同じにしてください",
+                launch.internet_listen.port()
+            );
+        }
+        if launch.internet_listen.port() == launch.listen.port() {
+            bail!("インターネット待受ポートはLAN待受ポートと分けてください");
+        }
+        if launch
+            .internet_listen_v6
+            .is_some_and(|address| address.port() != launch.internet_listen.port())
+        {
+            bail!("IPv6インターネット待受ポートは公開URL・IPv4待受と同じポートにしてください");
+        }
+        launch.tls_names.push(
+            internet
+                .host_str()
+                .context("公開URLにホスト名がありません")?
+                .trim_matches(['[', ']'])
+                .to_owned(),
+        );
+    }
     if interactive && source.is_none() && options.provider.is_none() {
         options.provider = Some(prompt(
             "推論エンジン（mock / ollama / compatible_http）",
@@ -535,10 +682,14 @@ pub async fn run(
     let character = SqliteRepository::peek_character(&data.join("inori.sqlite")).await?;
     validate_character(&config, character.as_ref(), &graph)?;
     println!(
-        "保存先: {}\n待受: {}\n接続先: {}",
+        "保存先: {}\nLAN待受: {}\nLAN接続URL（証明書名）: {}\nインターネットURL: {}",
         data.display(),
         launch.listen,
-        launch.server_url
+        launch.server_url,
+        launch
+            .internet_url
+            .as_deref()
+            .unwrap_or("未設定（外部接続OFF）")
     );
     if interactive && !yes("この内容で保存・初期化しますか", true)? {
         bail!("セットアップを中断しました（設定は保存していません）");
@@ -550,11 +701,46 @@ pub async fn run(
     support::restrict_path(&data, true)?;
     let _listener = std::net::TcpListener::bind(launch.listen)
         .context("待受ポートを利用できません。別のポートを指定してください")?;
-    ensure_certificate(&data, &launch.tls_names)?;
+    let _internet_listener =
+        if launch.internet_url.is_some() {
+            Some(bind_listener(launch.internet_listen).context(
+                "インターネット用待受ポートを利用できません。別のポートを指定してください",
+            )?)
+        } else {
+            None
+        };
+    let _internet_listener_v6 = if launch.internet_url.is_some() {
+        launch
+            .internet_listen_v6
+            .and_then(|address| match bind_listener(address) {
+                Ok(listener) => Some(listener),
+                Err(error) => {
+                    eprintln!("IPv6待受は利用できません: {error}");
+                    None
+                }
+            })
+    } else {
+        None
+    };
+    if options.refresh_certificate {
+        refresh_certificate(&data, &launch.tls_names)?;
+    } else {
+        ensure_certificate(&data, &launch.tls_names)?;
+    }
     support::verify_certificate_name(
         &support::read_limited(&data.join("server.pem"), 65536)?,
         &launch.server_url,
     )?;
+    if let Some(internet_url) = &launch.internet_url
+        && let Err(error) = support::verify_certificate_name(
+            &support::read_limited(&data.join("server.pem"), 65536)?,
+            internet_url,
+        )
+    {
+        bail!(
+            "公開URLの証明書名が一致しません。サーバー停止後に --refresh-certificate を付けて setup を再実行してください。既存端末は新しい接続用ファイルの取り込みが必要です: {error}"
+        );
+    }
     let repo =
         SqliteRepository::open_locked(&data.join("inori.sqlite"), config.character.clone()).await?;
     ensure_owner(&repo, &data).await?;
@@ -580,8 +766,18 @@ pub async fn run(
     drop(_guard);
     if !launch.listen.ip().is_loopback() {
         println!(
-            "LAN/VPN内からTCP {}への接続を許可してください。ファイアウォール・ルーター設定は変更していません。",
-            launch.listen.port()
+            "宅内LANからTCP {}とUDP {}への接続を許可してください。ファイアウォール・ルーター設定は変更していません。",
+            launch.listen.port(),
+            support::discovery::DISCOVERY_PORT
+        );
+    }
+    if launch.internet_url.is_some() {
+        println!(
+            "外部接続は初期状態でOFFです。TCP {}からサーバーTCP {}への転送と、公開DNS/DDNSを設定してください。",
+            support::validate_server_url(launch.internet_url.as_deref().unwrap(), false)?
+                .port_or_known_default()
+                .unwrap_or(9474),
+            launch.internet_listen.port()
         );
     }
     if options.check_engines
@@ -617,6 +813,7 @@ pub async fn check_engines(
 ) -> Result<()> {
     let graph = resolve_config(config)?;
     let client = reqwest::Client::builder()
+        .user_agent(concat!("Inori/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -699,15 +896,91 @@ pub fn owner_config(data: &Path, url: &str) -> ClientConfig {
     }
 }
 
+pub fn local_target(launch: &LaunchSettings) -> SocketAddr {
+    let ip = match launch.listen.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        }
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+        }
+        ip => ip,
+    };
+    SocketAddr::new(ip, launch.listen.port())
+}
+
+fn owner_client(
+    data: &Path,
+    url: &str,
+    local_target: SocketAddr,
+    timeout: std::time::Duration,
+) -> Result<(reqwest::Client, String)> {
+    let local_url = support::url_via(url, Some(local_target))?;
+    let client =
+        support::connection_http_via(&owner_config(data, &local_url), timeout, Some(local_target))?;
+    Ok((client, local_url))
+}
+
+pub fn read_internet_access(data: &Path) -> Result<bool> {
+    let path = data.join("network-access.toml");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let state: NetworkAccessState =
+        toml::from_str(std::str::from_utf8(&support::read_limited(&path, 4096)?)?)?;
+    Ok(state.internet_enabled)
+}
+
+pub async fn set_or_read_network_access(
+    data: &Path,
+    launch: &LaunchSettings,
+    desired: Option<bool>,
+) -> Result<NetworkAccessState> {
+    if desired == Some(true) && launch.internet_url.is_none() {
+        bail!(
+            "インターネットURLが未設定です。サーバー停止中にsetup --internet-urlを実行してください"
+        );
+    }
+    let (client, control_url) = owner_client(
+        data,
+        &launch.server_url,
+        local_target(launch),
+        std::time::Duration::from_secs(5),
+    )?;
+    let response = if let Some(internet_enabled) = desired {
+        client
+            .put(format!("{control_url}/v1/network/access"))
+            .json(&NetworkAccessUpdate { internet_enabled })
+            .send()
+            .await
+    } else {
+        client
+            .get(format!("{control_url}/v1/network/access"))
+            .send()
+            .await
+    }
+    .map_err(|error| anyhow::anyhow!(support::connection_error(&error)))?;
+    if !response.status().is_success() {
+        bail!(
+            "ネットワーク設定の取得・変更に失敗しました（HTTP {}）。サーバーが起動しているか確認してください",
+            response.status().as_u16()
+        );
+    }
+    response
+        .json()
+        .await
+        .context("ネットワーク設定の応答を読み込めません")
+}
+
 pub async fn issue_over_https(
     data: &Path,
     url: &str,
+    local_target: SocketAddr,
     request: &CreateDeviceRequest,
 ) -> Result<CreateDeviceResponse> {
-    let client =
-        support::connection_http(&owner_config(data, url), std::time::Duration::from_secs(5))?;
+    let (client, base) = owner_client(data, url, local_target, std::time::Duration::from_secs(5))?;
     let mut response = client
-        .post(format!("{}/v1/devices", url.trim_end_matches('/')))
+        .post(format!("{base}/v1/devices"))
         .json(request)
         .send()
         .await
@@ -732,12 +1005,16 @@ pub async fn issue_over_https(
     serde_json::from_slice(&body).context("端末発行応答が不正です")
 }
 
-pub async fn revoke_over_https(data: &Path, url: &str, id: &str) -> Result<()> {
+pub async fn revoke_over_https(
+    data: &Path,
+    url: &str,
+    local_target: SocketAddr,
+    id: &str,
+) -> Result<()> {
     let id = uuid::Uuid::parse_str(id).context("端末IDの形式が不正です")?;
-    let client =
-        support::connection_http(&owner_config(data, url), std::time::Duration::from_secs(5))?;
+    let (client, base) = owner_client(data, url, local_target, std::time::Duration::from_secs(5))?;
     let response = client
-        .delete(format!("{}/v1/devices/{id}", url.trim_end_matches('/')))
+        .delete(format!("{base}/v1/devices/{id}"))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!(support::connection_error(&e)))?;
@@ -765,9 +1042,15 @@ pub async fn doctor(
         &graph,
     )?;
     println!(
-        "設定: 正常\n保存先: {}\n接続先: {}",
+        "設定: 正常\n保存先: {}\nLAN接続URL（証明書名）: {}\nインターネットURL: {}\n外部接続: {}",
         data.display(),
-        launch.server_url
+        launch.server_url,
+        launch.internet_url.as_deref().unwrap_or("未設定"),
+        if read_internet_access(data)? {
+            "ON"
+        } else {
+            "OFF"
+        }
     );
     if !data.join("inori.sqlite").exists() {
         bail!("未初期化です。setup を実行してください（診断では作成しません）");
@@ -779,6 +1062,9 @@ pub async fn doctor(
         support::certificate_fingerprint(&cert)?
     );
     support::verify_certificate_name(&cert, &launch.server_url)?;
+    if let Some(internet_url) = &launch.internet_url {
+        support::verify_certificate_name(&cert, internet_url)?;
+    }
     let credentials = load_credentials(&data.join("server.secrets.toml"))?;
     for profile in &config.providers {
         if let Some(key) = &profile.api_key_env
@@ -789,7 +1075,11 @@ pub async fn doctor(
         }
     }
     if connect {
-        let caps = support::probe(&owner_config(data, &launch.server_url)).await?;
+        let caps = support::probe_via(
+            &owner_config(data, &launch.server_url),
+            Some(local_target(launch)),
+        )
+        .await?;
         println!(
             "TLS・認証: 正常 / チャット={} 音声認識={} 音声出力={}",
             caps.text_chat, caps.transcription, caps.speech
@@ -799,14 +1089,29 @@ pub async fn doctor(
     Ok(())
 }
 
+pub struct ConnectionExportOptions<'a> {
+    pub server_url: &'a str,
+    pub control_url: &'a str,
+    pub control_target: SocketAddr,
+    pub internet_configured: bool,
+    pub app_id: &'a str,
+    pub destination: &'a Path,
+}
+
 pub async fn export_connection(
     data: &Path,
     config: &ServerConfig,
-    server_url: &str,
-    app_id: &str,
-    destination: &Path,
+    options: ConnectionExportOptions<'_>,
     request: CreateDeviceRequest,
 ) -> Result<()> {
+    let ConnectionExportOptions {
+        server_url,
+        control_url,
+        control_target,
+        internet_configured,
+        app_id,
+        destination,
+    } = options;
     support::validate_app_id(app_id)?;
     support::validate_server_url(server_url, false)?;
     if destination.exists() {
@@ -815,15 +1120,41 @@ pub async fn export_connection(
     let certificate_pem =
         String::from_utf8(support::read_limited(&data.join("server.pem"), 65536)?)?;
     support::verify_certificate_name(certificate_pem.as_bytes(), server_url)?;
-    let provisional = ConnectionBundle {
-        schema_version: 1,
-        server_url: server_url.into(),
-        certificate_pem: certificate_pem.clone(),
-        device_id: "pending".into(),
-        app_id: app_id.into(),
-        token: "placeholder-token-for-validation".into(),
-    };
-    support::validate_bundle(&provisional, app_id)?;
+    if internet_configured {
+        support::validate_bundle_v2(
+            &ConnectionBundleV2 {
+                schema_version: 2,
+                server_url: server_url.into(),
+                endpoints: vec![
+                    ConnectionEndpoint {
+                        kind: ConnectionEndpointKind::LanDiscovery,
+                        url: None,
+                    },
+                    ConnectionEndpoint {
+                        kind: ConnectionEndpointKind::Direct,
+                        url: Some(server_url.into()),
+                    },
+                ],
+                certificate_pem: certificate_pem.clone(),
+                device_id: "pending".into(),
+                app_id: app_id.into(),
+                token: "placeholder-token-for-validation".into(),
+            },
+            app_id,
+        )?;
+    } else {
+        support::validate_bundle(
+            &ConnectionBundle {
+                schema_version: 1,
+                server_url: server_url.into(),
+                certificate_pem: certificate_pem.clone(),
+                device_id: "pending".into(),
+                app_id: app_id.into(),
+                token: "placeholder-token-for-validation".into(),
+            },
+            app_id,
+        )?;
+    }
     let guard = lock(data);
     let (issued, local_repo): (CreateDeviceResponse, Option<SqliteRepository>) = match guard
         .as_ref()
@@ -840,29 +1171,54 @@ pub async fn export_connection(
         }
         Err(_) => {
             // Only authenticated HTTPS is used while the live server owns the storage lock.
-            (issue_over_https(data, server_url, &request).await?, None)
+            (
+                issue_over_https(data, control_url, control_target, &request).await?,
+                None,
+            )
         }
     };
-    let bundle = ConnectionBundle {
-        device_id: issued.device_id.clone(),
-        token: issued.token,
-        ..provisional
+    let serialized = if internet_configured {
+        serde_json::to_vec_pretty(&ConnectionBundleV2 {
+            schema_version: 2,
+            server_url: server_url.into(),
+            endpoints: vec![
+                ConnectionEndpoint {
+                    kind: ConnectionEndpointKind::LanDiscovery,
+                    url: None,
+                },
+                ConnectionEndpoint {
+                    kind: ConnectionEndpointKind::Direct,
+                    url: Some(server_url.into()),
+                },
+            ],
+            certificate_pem: certificate_pem.clone(),
+            device_id: issued.device_id.clone(),
+            app_id: app_id.into(),
+            token: issued.token.clone(),
+        })?
+    } else {
+        serde_json::to_vec_pretty(&ConnectionBundle {
+            schema_version: 1,
+            server_url: server_url.into(),
+            certificate_pem: certificate_pem.clone(),
+            device_id: issued.device_id.clone(),
+            app_id: app_id.into(),
+            token: issued.token.clone(),
+        })?
     };
-    let result = support::write_private(destination, &serde_json::to_vec_pretty(&bundle)?, false);
+    let result = support::write_private(destination, &serialized, false);
     if result.is_err() {
         if let Some(repo) = &local_repo {
             repo.revoke_device(&issued.device_id).await?;
         } else {
-            let client = support::connection_http(
-                &owner_config(data, server_url),
+            let (client, control_url) = owner_client(
+                data,
+                control_url,
+                control_target,
                 std::time::Duration::from_secs(5),
             )?;
             let _ = client
-                .delete(format!(
-                    "{}/v1/devices/{}",
-                    server_url.trim_end_matches('/'),
-                    issued.device_id
-                ))
+                .delete(format!("{}/v1/devices/{}", control_url, issued.device_id))
                 .send()
                 .await;
         }
@@ -894,6 +1250,30 @@ mod tests {
         let error = load_credentials(&path).unwrap_err();
         assert!(!format!("{error:?}").contains("synthetic-secret"));
         assert!(error.to_string().contains("hidden"));
+    }
+    #[test]
+    fn legacy_launch_settings_migrate_with_public_access_disabled() {
+        let launch: LaunchSettings = toml::from_str(
+            "listen = '127.0.0.1:9473'\nserver_url = 'https://localhost:9473'\ntls_names = []\n",
+        )
+        .unwrap();
+        assert_eq!(launch.internet_url, None);
+        assert_eq!(launch.internet_listen, "0.0.0.0:9474".parse().unwrap());
+        assert_eq!(
+            launch.internet_listen_v6,
+            Some("[::]:9474".parse().unwrap())
+        );
+    }
+    #[test]
+    fn public_access_is_default_deny_and_persists_only_boolean_state() {
+        let work = synthetic_directory();
+        assert!(!read_internet_access(work.path()).unwrap());
+        std::fs::write(
+            work.path().join("network-access.toml"),
+            "internet_enabled = true\n",
+        )
+        .unwrap();
+        assert!(read_internet_access(work.path()).unwrap());
     }
     #[test]
     fn opting_into_autostart_does_not_silently_fork_existing_character_storage() {

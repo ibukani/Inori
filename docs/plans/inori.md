@@ -39,6 +39,8 @@ app-supportに設定保存・接続診断を置き、サーバーのGUI・音声
 自動起動は明示選択のOSサービスとし、状態の保存元や既存データの保護規則を変更しない。
 詳細は [セットアップ](../development/setup.md) と [ADR 0006](../adr/0006-shared-setup.md) を参照。
 
+ユーザー確定事項（R23）: LANはデスクトップアプリが自動検出し、インターネット直接公開はサーバーCLIで明示的にON/OFFする。公開OFF時もLAN接続を保つ。IPv4のルーター転送は公開待受ポートだけに向ける。詳細は [ADR 0009](../adr/0009-lan-and-internet-access.md) を参照。
+
 - domain: 人格、原記録、記憶、権限、操作状態の検証。GUI/DB/HTTP非依存。
 - runtime: 状態と保護規則、会話優先、中断、予算、操作台帳、記憶の確定。外部I/Oはports経由。
 - module-api / composition: 能力の共通trait、定義、構成の静的検証と接続順。

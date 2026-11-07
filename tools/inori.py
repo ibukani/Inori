@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -201,6 +202,21 @@ def require_local_server(command: str, app_id: str, current: str, target: str | 
         raise ValueError(f"{command} operates on this machine and does not accept --target")
 
 
+def update_bundle_member_parts(member_name: str, bundle_name: str) -> tuple[str, ...]:
+    if not member_name or "\\" in member_name or "\x00" in member_name or ":" in member_name:
+        raise ValueError("generated update archive contains an unexpected entry")
+    path = PurePosixPath(member_name)
+    if (
+        path.is_absolute()
+        or path.as_posix() != member_name
+        or len(path.parts) < 2
+        or path.parts[0] != bundle_name
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError("generated update archive contains an unexpected entry")
+    return path.parts[1:]
+
+
 def installed_server_paths(current: str) -> tuple[Path, Path]:
     if current == "windows":
         program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
@@ -255,37 +271,43 @@ def uninstall_local_server(current: str) -> None:
     print(f"Inori server was uninstalled. Data and settings remain in {data_dir}.")
 
 
-def update_local_server(app: dict, executable: Path, version: str, architecture: str, current: str) -> None:
+def update_local_server(app: dict, executable: Path, version: str, architecture: str,
+                        current: str, target: str | None) -> None:
     with tempfile.TemporaryDirectory(prefix="inori-dev-update-") as temporary:
         temporary_dir = Path(temporary)
         output_dir = temporary_dir / "dist"
         output_dir.mkdir()
         artifact = package_artifact(app, executable, version, current, architecture, output_dir,
-                                   license_documents(app))
+                                   license_documents(app, target))
         bundle_name = artifact.name.removesuffix(".zip" if current == "windows" else ".tar.gz")
         bundle_dir = temporary_dir / bundle_name
         bundle_dir.mkdir()
         if current == "windows":
             with zipfile.ZipFile(artifact) as archive:
-                for name in archive.namelist():
-                    path = PurePosixPath(name)
-                    if (len(path.parts) != 2 or path.parts[0] != bundle_name or
-                            path.parts[1] in {".", ".."} or any(char in path.parts[1] for char in "\\/:")):
+                seen: set[tuple[str, ...]] = set()
+                for member in archive.infolist():
+                    parts = update_bundle_member_parts(member.filename, bundle_name)
+                    mode = member.external_attr >> 16
+                    if member.is_dir() or stat.S_IFMT(mode) not in {0, stat.S_IFREG} or parts in seen:
                         raise ValueError("generated update archive contains an unexpected entry")
-                    destination = bundle_dir / path.parts[1]
-                    destination.write_bytes(archive.read(name))
+                    seen.add(parts)
+                    destination = bundle_dir.joinpath(*parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(archive.read(member))
             command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(bundle_dir / "update.ps1")]
         else:
             with tarfile.open(artifact, "r:gz") as archive:
+                seen: set[tuple[str, ...]] = set()
                 for member in archive.getmembers():
-                    path = PurePosixPath(member.name)
-                    if (len(path.parts) != 2 or path.parts[0] != bundle_name or not member.isfile() or
-                            path.parts[1] in {".", ".."} or any(char in path.parts[1] for char in "\\/:")):
+                    parts = update_bundle_member_parts(member.name, bundle_name)
+                    if not member.isfile() or parts in seen:
                         raise ValueError("generated update archive contains an unexpected entry")
+                    seen.add(parts)
                     source = archive.extractfile(member)
                     if source is None:
                         raise ValueError("cannot read generated update archive entry")
-                    destination = bundle_dir / path.parts[1]
+                    destination = bundle_dir.joinpath(*parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_bytes(source.read())
                     destination.chmod(member.mode & 0o777)
             command = [str(bundle_dir / "update.sh")]
@@ -341,7 +363,7 @@ def main() -> int:
     elif args.command == "update":
         version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
         architecture = {"AMD64": "x86_64", "arm64": "aarch64"}.get(platform.machine(), platform.machine())
-        update_local_server(app, executable, version, architecture, current)
+        update_local_server(app, executable, version, architecture, current, args.target)
     elif args.command == "setup":
         invoke([str(executable), *app["setup_args"], *extra])
     elif args.command == "run":

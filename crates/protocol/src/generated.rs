@@ -45,6 +45,55 @@ impl std::fmt::Debug for ConnectionBundle {
             .finish()
     }
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionBundleV2 {
+    pub schema_version: u64,
+    pub server_url: String,
+    pub endpoints: Vec<ConnectionEndpoint>,
+    pub certificate_pem: String,
+    pub device_id: String,
+    pub app_id: String,
+    pub token: String,
+}
+impl std::fmt::Debug for ConnectionBundleV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionBundleV2")
+            .field("schema_version", &self.schema_version)
+            .field("server_url", &self.server_url)
+            .field("endpoints", &self.endpoints)
+            .field("certificate_pem", &self.certificate_pem)
+            .field("device_id", &self.device_id)
+            .field("app_id", &self.app_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionEndpoint {
+    pub kind: ConnectionEndpointKind,
+    pub url: Option<String>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConnectionEndpointKind {
+    #[serde(rename = "lan_discovery")]
+    LanDiscovery,
+    #[serde(rename = "direct")]
+    Direct,
+    #[serde(rename = "relay")]
+    Relay,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkAccessUpdate {
+    pub internet_enabled: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkAccessState {
+    pub internet_enabled: bool,
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Audience {
     #[serde(rename = "private")]

@@ -69,6 +69,8 @@ fn app(service: Arc<Service>) -> Arc<App> {
         extensions: BTreeMap::new(),
         data_dir: std::env::temp_dir(),
         shutdown: CancellationToken::new(),
+        internet_configured: false,
+        internet_access: tokio::sync::watch::channel(false).0,
     })
 }
 async fn request(

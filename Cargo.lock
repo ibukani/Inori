@@ -3871,6 +3871,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml 0.9.12+spec-1.1.0",
  "uuid",
 ]
@@ -4138,6 +4139,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "socket2",
  "subtle",
  "tempfile",
  "tokio",

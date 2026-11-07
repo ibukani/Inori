@@ -79,6 +79,7 @@ impl HttpProvider {
             }
         }
         let client = reqwest::Client::builder()
+            .user_agent(concat!("Inori/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(profile.timeout_seconds))
             .build()?;
         Ok(Self {
