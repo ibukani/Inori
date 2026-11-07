@@ -7,14 +7,11 @@ Windowsクライアントは実行時の負荷・メモリ使用量の抑制を�
 選定方針は [ADR 0004](docs/adr/0004-gpui-resource-priority.md)、実機適合性の本採用条件は [GPUI採用ゲート](docs/development/gpui-gate.md) を参照してください。
 実装状態と実機未検証の条件は [開発状況](docs/development/status.md) に記載します。
 
-- [確定要件と対応表](docs/requirements.md)
-- [統合プラン](docs/plans/inori.md)
-- [アーキテクチャ](docs/architecture.md)
-- [サーバーの構成を変更する](docs/development/composition.md)
-- [開発・起動手順](docs/development/quickstart.md)
-- [受け入れ条件と検証](docs/development/acceptance.md)
-- [公開契約](docs/protocols/v1.md)
-- [設計判断](docs/adr/0001-foundation.md)
+- [ドキュメント案内](docs/README.md): 要件・設計・手順・検証記録の入口
+- [セットアップと配布](docs/development/setup.md): 利用開始・端末接続・常駐
+- [開発と起動](docs/development/quickstart.md): ソースからの起動・通常の検査
+- [実装状況](docs/development/status.md): 実装済み・確認済み・未検証
+- [次に行うこと](docs/plans/next-steps.md): 優先順の提案・依存関係・完了条件
 
 初期状態で外部 AI への送信はありません。ローカルの mock 接続で動作を確認でき、
 Ollama・互換 HTTP API・whisper.cpp・VOICEVOX は設定した場合のみ利用します。

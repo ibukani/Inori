@@ -3,6 +3,35 @@
   "$id": "https://inori.local/contracts/v1.json",
   "title": "Inori protocol v1",
   "$defs": {
+    "CreateDeviceRequest": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "audience": { "$ref": "#/$defs/Audience" },
+        "admin": { "type": "boolean" }
+      },
+      "required": ["name", "audience", "admin"]
+    },
+    "CreateDeviceResponse": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "device_id": { "type": "string" },
+        "token": { "type": "string", "writeOnly": true }
+      },
+      "required": ["device_id", "token"]
+    },
+    "ConnectionBundle": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 0 },
+        "server_url": { "type": "string" },
+        "certificate_pem": { "type": "string" },
+        "device_id": { "type": "string" },
+        "app_id": { "type": "string" },
+        "token": { "type": "string", "writeOnly": true }
+      },
+      "required": ["schema_version", "server_url", "certificate_pem", "device_id", "app_id", "token"]
+    },
     "Audience": {
       "type": "string",
       "enum": [

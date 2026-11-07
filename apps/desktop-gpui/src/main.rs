@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use anyhow::{Context, Result};
 use clap::Parser;
+use inori_app_support as support;
 use inori_client_core::ClientConfig;
 use std::path::PathBuf;
 #[cfg(any(windows, target_os = "macos"))]
@@ -23,6 +24,11 @@ struct Args {
     audio_devices: bool,
     #[arg(long)]
     probe_seconds: Option<u64>,
+    #[arg(long)]
+    import_connection: Option<PathBuf>,
+    /// Diagnose TLS/authentication without starting the GUI or audio devices.
+    #[arg(long)]
+    doctor: bool,
 }
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -31,14 +37,19 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let portable = std::env::current_exe()?.with_file_name("inori-client.toml");
-    let selected = args
+    let saved = support::client_config_path(support::DESKTOP_APP)?;
+    let destination = args
         .config
         .as_ref()
-        .or_else(|| portable.exists().then_some(&portable));
-    let mut config = match selected {
-        Some(path) => toml::from_str::<ClientConfig>(&std::fs::read_to_string(path)?)?,
-        None => ClientConfig::local()?,
-    };
+        .map(std::path::absolute)
+        .transpose()?
+        .unwrap_or(saved.clone());
+    let (mut config, startup_error) =
+        match support::load_client_config(args.config.as_deref(), &saved, &portable) {
+            Ok((config, _)) => (config, None),
+            Err(error) if !args.doctor => (ClientConfig::local()?, Some(error.to_string())),
+            Err(error) => return Err(error),
+        };
     if let Some(url) = args.server {
         config.server_url = url;
     }
@@ -54,9 +65,35 @@ fn main() -> Result<()> {
             config.certificate_file = None;
         }
     }
+    if args.doctor {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            if let Some(path) = &args.import_connection {
+                let bundle = support::read_bundle(path, support::DESKTOP_APP)?;
+                let work = tempfile::tempdir()?;
+                let temporary =
+                    support::prepare_bundle(&bundle, support::DESKTOP_APP, work.path())?;
+                support::probe(&temporary.config).await?;
+            } else {
+                support::probe(&config).await?;
+            }
+            anyhow::Ok(())
+        })?;
+        println!("TLS・端末認証・機能確認: 正常（設定は変更していません）");
+        return Ok(());
+    }
     #[cfg(any(windows, target_os = "macos"))]
     {
-        ui::run(config, args.probe_seconds).context("desktop failed")
+        ui::run(
+            config,
+            destination,
+            args.import_connection,
+            startup_error,
+            args.probe_seconds,
+        )
+        .context("desktop failed")
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {

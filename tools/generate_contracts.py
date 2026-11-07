@@ -53,12 +53,19 @@ def generate():
         else:
             if node.get("type") != "object" or set(node["required"]) != set(node["properties"]):
                 raise ValueError("v1 objects require explicit fields; use nullable fields for optional values")
-            rust += ["#[derive(Debug, Clone, Serialize, Deserialize)]", "#[serde(deny_unknown_fields)]", f"pub struct {name} {{"]
+            secret_fields = {field for field, value in node["properties"].items() if value.get("writeOnly")}
+            rust += ["#[derive(Clone, Serialize, Deserialize)]" if secret_fields else "#[derive(Debug, Clone, Serialize, Deserialize)]", "#[serde(deny_unknown_fields)]", f"pub struct {name} {{"]
             typescript += [f"export interface {name} {{"]
             for field, value in node["properties"].items():
                 rust += [f"    pub {field}: {typename(value, 'rust')},"]
                 typescript += [f"  {field}: {typename(value, 'ts')};"]
             rust += ["}"]
+            if secret_fields:
+                rust += [f"impl std::fmt::Debug for {name} {{", "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {", f'        f.debug_struct("{name}")']
+                for field in node["properties"]:
+                    value = '&"<redacted>"' if field in secret_fields else f'&self.{field}'
+                    rust += [f'            .field("{field}", {value})']
+                rust += ["            .finish()", "    }", "}"]
             typescript += ["}"]
     return {ROOT / "crates/protocol/src/generated.rs": "\\n".join(rust).replace('\\n', '\n') + "\n", ROOT / "packages/sdk-typescript/src/generated.ts": "\\n".join(typescript).replace('\\n', '\n') + "\n"}
 

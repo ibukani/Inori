@@ -4,44 +4,20 @@ mod backend;
 use anyhow::{Context, Result, bail};
 pub use backend::*;
 use futures_util::{SinkExt, StreamExt};
+pub use inori_app_support::ClientConfig;
 use inori_domain::Snapshot;
 use inori_protocol::{ClientHello, EventEnvelope, PROTOCOL_VERSION, ServerCapabilities};
 use reqwest::{
     Method,
-    header::{AUTHORIZATION, HeaderMap, HeaderValue},
+    header::{AUTHORIZATION, HeaderValue},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{Connector, tungstenite::client::IntoClientRequest};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct ClientConfig {
-    pub server_url: String,
-    pub token_file: PathBuf,
-    pub certificate_file: Option<PathBuf>,
-    #[serde(default)]
-    pub insecure_loopback: bool,
-}
-impl ClientConfig {
-    pub fn local() -> Result<Self> {
-        let base = directories_path()?;
-        Ok(Self {
-            server_url: "https://localhost:9473".into(),
-            token_file: base.join("owner.token"),
-            certificate_file: Some(base.join("server.pem")),
-            insecure_loopback: false,
-        })
-    }
-}
-fn directories_path() -> Result<PathBuf> {
-    Ok(directories::ProjectDirs::from("dev", "Inori", "Inori")
-        .context("application data directory unavailable")?
-        .data_local_dir()
-        .into())
-}
 #[derive(Clone)]
 pub struct ApiClient {
     base: String,
@@ -52,42 +28,18 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(config: &ClientConfig) -> Result<Self> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let url = reqwest::Url::parse(&config.server_url)?;
-        if !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || !matches!(url.path(), "" | "/")
-        {
-            bail!("server URL must contain only scheme, host, and port");
-        }
-        let local = matches!(
-            url.host_str(),
-            Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-        );
-        if url.scheme() != "https" && !(url.scheme() == "http" && config.insecure_loopback && local)
-        {
-            bail!(
-                "HTTPS required; HTTP is allowed only with an explicit loopback development setting"
-            );
-        }
+        inori_app_support::validate_server_url(&config.server_url, config.insecure_loopback)?;
         let token = std::fs::read_to_string(&config.token_file)
-            .context("device token file cannot be read")?
+            .context("端末トークンを読み込めません。接続用ファイルを取り込んでください")?
             .trim()
             .to_owned();
         if token.len() < 16 || token.len() > 256 {
-            bail!("invalid device token file");
+            bail!("端末トークンの形式が不正です");
         }
-        let mut headers = HeaderMap::new();
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))?;
-        authorization.set_sensitive(true);
-        headers.insert(AUTHORIZATION, authorization);
-        let mut builder = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(std::time::Duration::from_secs(120));
+        let http = inori_app_support::connection_http(config, std::time::Duration::from_secs(120))?;
         let mut tls = None;
         if let Some(path) = &config.certificate_file {
             let pem = std::fs::read(path).context("paired server certificate cannot be read")?;
-            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
             let mut roots = rustls::RootCertStore::empty();
             for cert in rustls_pemfile::certs(&mut pem.as_slice()) {
                 roots.add(cert?)?;
@@ -101,7 +53,7 @@ impl ApiClient {
         Ok(Self {
             base: config.server_url.trim_end_matches('/').into(),
             token,
-            http: builder.build()?,
+            http,
             tls,
         })
     }
@@ -115,8 +67,17 @@ impl ApiClient {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!(inori_app_support::connection_error(&e)))?;
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("端末認証が失効または無効です。接続用ファイルを再発行してください");
+        }
+        if status == reqwest::StatusCode::FORBIDDEN {
+            bail!("この端末には操作する権限がありません");
+        }
         let value: Value = serde_json::from_slice(&bounded_body(response, 4 * 1024 * 1024).await?)
             .context("server response was not JSON")?;
         if !status.is_success() {
@@ -141,7 +102,8 @@ impl ApiClient {
             .http
             .get(format!("{}/v1/capabilities", self.base))
             .send()
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!(inori_app_support::connection_error(&e)))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             // Previous v1 servers support text but cannot advertise voice availability.
             return Ok(ServerCapabilities {
@@ -154,7 +116,9 @@ impl ApiClient {
                 reason: Some("旧サーバーへの接続中は音声を利用できません。".into()),
             });
         }
-        let response = response.error_for_status()?;
+        let response = response
+            .error_for_status()
+            .map_err(|e| anyhow::anyhow!(inori_app_support::connection_error(&e)))?;
         Ok(serde_json::from_slice(
             &bounded_body(response, 65_536).await?,
         )?)
@@ -206,7 +170,30 @@ impl ApiClient {
         let connector = self.tls.clone().map(Connector::Rustls);
         let (mut socket, _) =
             tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
-                .await?;
+                .await
+                .map_err(|error| {
+                    use tokio_tungstenite::tungstenite::Error;
+                    match error {
+                        Error::Http(response)
+                            if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
+                        {
+                            anyhow::anyhow!(
+                                "端末認証が失効または無効です。接続用ファイルを再発行してください"
+                            )
+                        }
+                        Error::Http(response)
+                            if response.status() == reqwest::StatusCode::FORBIDDEN =>
+                        {
+                            anyhow::anyhow!("この端末には接続先を利用する権限がありません")
+                        }
+                        Error::Tls(_) => anyhow::anyhow!(
+                            "証明書が一致しません。接続名と証明書を確認して再ペアリングしてください"
+                        ),
+                        _ => anyhow::anyhow!(
+                            "サーバーへ接続できません。起動状態・URL・LAN/VPNを確認してください"
+                        ),
+                    }
+                })?;
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&ClientHello {

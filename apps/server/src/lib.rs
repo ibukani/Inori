@@ -24,8 +24,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 mod bootstrap;
 pub use bootstrap::{
-    build_providers, build_service, instantiate, legacy_service, module_catalog, resolve_config,
-    selected_extensions, validate_character,
+    build_providers, build_service, build_service_with_credentials, instantiate, legacy_service,
+    module_catalog, resolve_config, selected_extensions, validate_character,
 };
 pub struct App {
     pub service: Arc<Service>,
@@ -108,7 +108,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/resources", post(upload))
         .route("/v1/resources/{id}", get(resource))
         .route("/v1/resources/{id}/transcribe", post(transcribe))
-        .route("/v1/devices", get(devices))
+        .route("/v1/devices", get(devices).post(create_device))
         .route("/v1/devices/{id}", delete(revoke))
         .route("/v1/backups", post(backup))
         .route_layer(middleware::from_fn_with_state(app.clone(), authenticate));
@@ -449,6 +449,40 @@ async fn devices(
 ) -> ApiResult<Vec<Device>> {
     admin(&d)?;
     Ok(Json(a.service.repo.devices().await?))
+}
+pub async fn issue_device(
+    repo: &dyn inori_runtime::Repository,
+    request: wire::CreateDeviceRequest,
+) -> Result<wire::CreateDeviceResponse> {
+    if request.name.trim().is_empty()
+        || request.name.chars().count() > 128
+        || request.name.chars().any(char::is_control)
+        || request.admin && matches!(request.audience, wire::Audience::Public)
+    {
+        bail!("invalid device name or public administrator");
+    }
+    let device_id = Uuid::new_v4().to_string();
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    repo.register_device(
+        Device {
+            id: device_id.clone(),
+            name: request.name,
+            audience: domain_audience(request.audience),
+            admin: request.admin,
+            revoked: false,
+        },
+        &token_hash(&token),
+    )
+    .await?;
+    Ok(wire::CreateDeviceResponse { device_id, token })
+}
+async fn create_device(
+    State(a): State<Arc<App>>,
+    Extension(d): Extension<Device>,
+    Json(r): Json<wire::CreateDeviceRequest>,
+) -> ApiResult<wire::CreateDeviceResponse> {
+    admin(&d)?;
+    Ok(Json(issue_device(a.service.repo.as_ref(), r).await?))
 }
 async fn revoke(
     State(a): State<Arc<App>>,

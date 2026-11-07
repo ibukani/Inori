@@ -4,6 +4,7 @@ import tomllib
 
 root = Path(__file__).resolve().parents[1]
 allowed = {
+    "inori-app-support": {"inori-protocol"},
     "inori-domain": set(), "inori-protocol": set(),
     "inori-module-api": {"inori-domain", "inori-protocol"},
     "inori-composition": {"inori-module-api"},
@@ -23,6 +24,8 @@ for name in modules:
 for name in ("inori-inference-providers", "inori-actions-extensions"):
     allowed[name].add("inori-extension-host")
 allowed["inori-server"] |= modules | {"inori-module-api", "inori-composition"}
+for name in ("inori-server", "inori-client-core", "inori-desktop"):
+    allowed[name].add("inori-app-support")
 for manifest in root.glob("**/Cargo.toml"):
     if any(part in {"target", "node_modules", ".cache"} for part in manifest.relative_to(root).parts):
         continue
@@ -36,7 +39,7 @@ for manifest in root.glob("**/Cargo.toml"):
         raise SystemExit(f"invalid dependency direction: {name} -> {internal - allowed.get(name, set())}")
     if name == "inori-domain" and dependencies - {"serde", "serde_json", "thiserror"}:
         raise SystemExit("domain must remain free of IO/framework dependencies")
-    if name in modules | {"inori-module-api", "inori-composition", "inori-runtime", "inori-server", "inori-storage-sqlite"} and dependencies & {"gpui", "gpui-component", "cpal", "inori-client-core"}:
+    if name in modules | {"inori-module-api", "inori-composition", "inori-runtime", "inori-server", "inori-storage-sqlite", "inori-app-support"} and dependencies & {"gpui", "gpui-component", "cpal", "inori-client-core"}:
         raise SystemExit(f"GUI/audio client dependency leaked into {name}")
     if name == "inori-runtime" and dependencies & {"reqwest", "axum", "sqlx"}:
         raise SystemExit("runtime must use ports instead of concrete adapters")

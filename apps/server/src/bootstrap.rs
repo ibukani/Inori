@@ -223,11 +223,25 @@ pub async fn build_service(
     clock: Arc<dyn Clock>,
     extensions: &BTreeMap<String, RegisteredExtension>,
 ) -> Result<Arc<Service>> {
+    build_service_with_credentials(config, repo, clock, extensions, &BTreeMap::new()).await
+}
+pub async fn build_service_with_credentials(
+    config: &ServerConfig,
+    repo: Arc<dyn Repository>,
+    clock: Arc<dyn Clock>,
+    extensions: &BTreeMap<String, RegisteredExtension>,
+    credentials: &BTreeMap<String, String>,
+) -> Result<Arc<Service>> {
     let graph = resolve_config(config)?;
     validate_character(config, Some(&repo.character().await?), &graph)?;
     let modules = instantiate(config, &graph, extensions)?;
     let providers = if graph.enabled("inference.providers") {
-        build_providers(config.providers.clone(), extensions, repo.clone())?
+        inori_inference_providers::build_providers_with_credentials(
+            config.providers.clone(),
+            extensions,
+            Arc::new(RepositoryPermissionGuard { repo: repo.clone() }),
+            credentials,
+        )?
     } else {
         vec![]
     };

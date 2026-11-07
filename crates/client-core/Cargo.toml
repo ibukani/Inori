@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+inori-app-support = { path = "../app-support" }
 anyhow.workspace = true
 uuid.workspace = true
 directories.workspace = true

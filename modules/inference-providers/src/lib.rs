@@ -45,9 +45,14 @@ use tokio_util::sync::CancellationToken;
 pub struct HttpProvider {
     profile: ProviderProfile,
     client: reqwest::Client,
+    credential: Option<String>,
 }
 impl HttpProvider {
     pub fn new(profile: ProviderProfile) -> Result<Self> {
+        Self::with_credential(profile, None)
+    }
+    /// Explicit bootstrap injection; never stored in the serializable provider profile.
+    pub fn with_credential(profile: ProviderProfile, credential: Option<String>) -> Result<Self> {
         if !matches!(profile.kind.as_str(), "mock" | "ollama" | "compatible_http") {
             bail!("unsupported provider kind");
         }
@@ -76,7 +81,11 @@ impl HttpProvider {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(profile.timeout_seconds))
             .build()?;
-        Ok(Self { profile, client })
+        Ok(Self {
+            profile,
+            client,
+            credential,
+        })
     }
 }
 
@@ -146,9 +155,11 @@ impl InferenceProvider for HttpProvider {
         }
         let mut request = self.client.post(url).json(&body);
         if let Some(name) = &self.profile.api_key_env {
-            request = request.bearer_auth(
-                std::env::var(name).context("configured provider credential is missing")?,
-            );
+            let key = std::env::var(name)
+                .ok()
+                .or_else(|| self.credential.clone())
+                .context("configured provider credential is missing")?;
+            request = request.bearer_auth(key);
         }
         let response = tokio::select! { _ = cancel.cancelled() => return Ok(()), result = request.send() => result.context("provider request failed")? };
         if !response.status().is_success() {
@@ -266,4 +277,4 @@ pub fn definition() -> ModuleDescriptor {
     d
 }
 mod rpc;
-pub use rpc::build_providers;
+pub use rpc::{build_providers, build_providers_with_credentials};

@@ -6,9 +6,11 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
 };
+use inori_app_support as support;
 use inori_client_core::{BackendControl, ClientCommand, ClientConfig, UiEvent, spawn_backend};
 use inori_domain::Snapshot;
 use inori_protocol::{DialogueMode, ServerCapabilities};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const BG: u32 = 0xf7fbff;
@@ -41,6 +43,9 @@ struct View {
     token: Entity<InputState>,
     certificate: Entity<InputState>,
     settings_open: bool,
+    config_destination: PathBuf,
+    candidate_bundle: Option<inori_protocol::ConnectionBundle>,
+    settings_busy: bool,
     microphone: bool,
     listening: bool,
     speech_output: bool,
@@ -58,7 +63,31 @@ struct ViewRef(Entity<View>);
 impl Global for ViewRef {}
 
 impl View {
-    fn new(config: ClientConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        config: ClientConfig,
+        config_destination: PathBuf,
+        initial_bundle: Option<PathBuf>,
+        startup_error: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut setup_status = startup_error;
+        let candidate_bundle = initial_bundle.and_then(|path| {
+            match support::read_bundle(&path, support::DESKTOP_APP) {
+                Ok(bundle) => Some(bundle),
+                Err(error) => {
+                    setup_status = Some(error.to_string());
+                    None
+                }
+            }
+        });
+        let settings_open = setup_status.is_some()
+            || candidate_bundle.is_some()
+            || !config.token_file.is_file()
+            || config
+                .certificate_file
+                .as_ref()
+                .is_some_and(|path| !path.is_file());
         let composer = cx.new(|cx| InputState::new(window, cx).placeholder("メッセージを入力…"));
         let url = cx.new(|cx| InputState::new(window, cx).default_value(config.server_url.clone()));
         let token = cx.new(|cx| {
@@ -91,13 +120,22 @@ impl View {
             snapshot: None,
             connected: false,
             available: None,
-            status: "サーバーへ接続しています…".into(),
+            status: setup_status.unwrap_or_else(|| {
+                if settings_open {
+                    "接続用ファイルを選択するか、接続先を設定してください".into()
+                } else {
+                    "サーバーへ接続しています…".into()
+                }
+            }),
             composer,
             history_scroll: ScrollHandle::default(),
             url,
             token,
             certificate,
-            settings_open: false,
+            settings_open,
+            config_destination,
+            candidate_bundle,
+            settings_busy: false,
             microphone: false,
             listening: false,
             speech_output: false,
@@ -267,6 +305,119 @@ impl View {
         cx.notify();
     }
 
+    fn choose_connection_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("接続用ファイルを選択".into()),
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = match selection.await {
+                Ok(Ok(Some(paths))) => paths
+                    .first()
+                    .map(|path| support::read_bundle(path, support::DESKTOP_APP)),
+                Ok(Ok(None)) => None,
+                _ => Some(Err(anyhow::anyhow!("ファイル選択を開けませんでした"))),
+            };
+            if let Some(result) = result {
+                let _ = weak.update_in(cx, |view, _, cx| {
+                    match result {
+                        Ok(bundle) => {
+                            view.candidate_bundle = Some(bundle);
+                            view.status = "接続先を確認して「接続して保存」を押してください".into();
+                        }
+                        Err(error) => view.status = error.to_string(),
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn test_and_save_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_busy {
+            return;
+        }
+        self.set_microphone(false, cx);
+        self.set_speech_output(false, cx);
+        let bundle = self.candidate_bundle.clone();
+        let destination = self.config_destination.clone();
+        let mut manual = self.config.clone();
+        manual.server_url = self.url.read(cx).value().to_string();
+        manual.token_file = self.token.read(cx).value().to_string().into();
+        let cert = self.certificate.read(cx).value().to_string();
+        manual.certificate_file = (!cert.trim().is_empty()).then(|| cert.into());
+        self.settings_busy = true;
+        self.status = "TLS・端末認証・対応機能を確認しています…".into();
+        let task = cx.background_executor().spawn(async move {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    if let Some(bundle) = bundle {
+                        let prepared = support::prepare_bundle(
+                            &bundle,
+                            support::DESKTOP_APP,
+                            &destination
+                                .parent()
+                                .ok_or_else(|| anyhow::anyhow!("設定の保存先が不正です"))?
+                                .join("connections"),
+                        )?;
+                        support::probe(&prepared.config).await?;
+                        prepared.commit(&destination)
+                    } else {
+                        support::probe(&manual).await?;
+                        support::save_client_config(&destination, &manual)?;
+                        Ok(manual)
+                    }
+                })
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result: anyhow::Result<ClientConfig> = task.await;
+            let _ = weak.update_in(cx, |view, window, cx| {
+                view.settings_busy = false;
+                match result {
+                    Ok(config) => {
+                        view.url.update(cx, |input, cx| {
+                            input.set_value(config.server_url.clone(), window, cx)
+                        });
+                        view.token.update(cx, |input, cx| {
+                            input.set_value(
+                                config.token_file.to_string_lossy().to_string(),
+                                window,
+                                cx,
+                            )
+                        });
+                        view.certificate.update(cx, |input, cx| {
+                            input.set_value(
+                                config
+                                    .certificate_file
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                window,
+                                cx,
+                            )
+                        });
+                        view.config = config;
+                        view.candidate_bundle = None;
+                        view.settings_open = false;
+                        view.reconnect(window, cx);
+                    }
+                    Err(error) => {
+                        view.status = format!("{}（現在の接続設定を保持しています）", error);
+                        view.settings_open = true;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn receive(&mut self, event: UiEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let follow_tail =
             self.history_scroll.max_offset().height + self.history_scroll.offset().y <= px(32.);
@@ -287,6 +438,9 @@ impl View {
             }
             UiEvent::Error(error) => {
                 self.status = error;
+                if !self.connected {
+                    self.settings_open = true;
+                }
             }
             UiEvent::Availability(value) => {
                 self.available = Some(value);
@@ -431,7 +585,8 @@ impl View {
                 .any(|source| source.turn_id.is_some())
         });
         if let Some(snapshot) = &self.snapshot {
-            for source in snapshot.sources.iter().rev() {
+            // The snapshot already supplies the bounded history in chronological order.
+            for source in &snapshot.sources {
                 if source.turn_id.is_none() {
                     continue;
                 }
@@ -615,6 +770,10 @@ impl View {
 
     fn connection_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .id("connection-settings")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_3()
@@ -624,6 +783,43 @@ impl View {
             .bg(rgb(SURFACE))
             .p_5()
             .child(div().text_xl().child("サーバーへの接続"))
+            .child(
+                div()
+                    .id("connection-feedback")
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .bg(rgb(BG))
+                    .rounded_lg()
+                    .p_3()
+                    .child(self.status.clone()),
+            )
+            .child(
+                Button::new("import-connection")
+                    .label("接続用ファイルを選択")
+                    .disabled(self.settings_busy)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.choose_connection_file(window, cx)),
+                    ),
+            )
+            .when_some(self.candidate_bundle.as_ref(), |element, bundle| {
+                let fingerprint =
+                    support::certificate_fingerprint(bundle.certificate_pem.as_bytes())
+                        .unwrap_or_else(|_| "読込不可".into());
+                element
+                    .child(div().text_sm().child(format!(
+                        "接続先: {}\n証明書 SHA256: {}\n端末: {}",
+                        bundle.server_url, fingerprint, bundle.device_id
+                    )))
+                    .child(
+                        Button::new("cancel-import")
+                            .label("ファイルの取り込みを取り消す")
+                            .disabled(self.settings_busy)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.candidate_bundle = None;
+                                cx.notify();
+                            })),
+                    )
+            })
             .child(
                 div()
                     .text_sm()
@@ -641,9 +837,13 @@ impl View {
                     .flex()
                     .gap_2()
                     .child(
-                        Button::new("connect").primary().label("接続する").on_click(
-                            cx.listener(|this, _, window, cx| this.reconnect(window, cx)),
-                        ),
+                        Button::new("connect")
+                            .primary()
+                            .label("接続して保存")
+                            .disabled(self.settings_busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.test_and_save_connection(window, cx)
+                            })),
                     )
                     .child(
                         Button::new("back-to-chat")
@@ -804,7 +1004,13 @@ fn create_tray() -> Result<TrayState> {
     })
 }
 
-pub fn run(config: ClientConfig, probe: Option<u64>) -> Result<()> {
+pub fn run(
+    config: ClientConfig,
+    destination: PathBuf,
+    initial_bundle: Option<PathBuf>,
+    startup_error: Option<String>,
+    probe: Option<u64>,
+) -> Result<()> {
     Application::new().run(move |cx| {
         gpui_component::init(cx);
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
@@ -825,7 +1031,16 @@ pub fn run(config: ClientConfig, probe: Option<u64>) -> Result<()> {
                 ..Default::default()
             },
             move |window, cx| {
-                let view = cx.new(|cx| View::new(config, window, cx));
+                let view = cx.new(|cx| {
+                    View::new(
+                        config,
+                        destination,
+                        initial_bundle,
+                        startup_error,
+                        window,
+                        cx,
+                    )
+                });
                 cx.set_global(ViewRef(view.clone()));
                 cx.new(|cx| Root::new(view, window, cx))
             },

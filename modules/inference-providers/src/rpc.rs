@@ -52,11 +52,27 @@ pub fn build_providers(
     extensions: &BTreeMap<String, RegisteredExtension>,
     guard: Arc<dyn PermissionGuard>,
 ) -> Result<Vec<Arc<dyn InferenceProvider>>> {
+    build_providers_with_credentials(profiles, extensions, guard, &BTreeMap::new())
+}
+pub fn build_providers_with_credentials(
+    profiles: Vec<ProviderProfile>,
+    extensions: &BTreeMap<String, RegisteredExtension>,
+    guard: Arc<dyn PermissionGuard>,
+    credentials: &BTreeMap<String, String>,
+) -> Result<Vec<Arc<dyn InferenceProvider>>> {
     profiles
         .into_iter()
         .map(|profile| {
             if profile.kind != "extension" {
-                return Ok(Arc::new(HttpProvider::new(profile)?) as Arc<dyn InferenceProvider>);
+                let credential = profile
+                    .api_key_env
+                    .as_ref()
+                    .and_then(|key| credentials.get(key))
+                    .cloned();
+                return Ok(
+                    Arc::new(HttpProvider::with_credential(profile, credential)?)
+                        as Arc<dyn InferenceProvider>,
+                );
             }
             if !(1024..=100_000).contains(&profile.max_context_chars)
                 || profile.max_output_tokens == 0

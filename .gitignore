@@ -20,4 +20,6 @@ __pycache__/
 *.bin
 *.log
 *.dmp
+*.inori-connection.json
+*.secrets.toml
 .DS_Store

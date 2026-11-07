@@ -1,6 +1,8 @@
 # 要件と対応表
 
 状態: user = ユーザーの要件、design = 設計上の選択、target = 未実測の仮目標。
+要件IDと確定内容はこの文書を正本とします。[文書案内](README.md)に各文書の役割、
+[受け入れ表](development/acceptance.md)に確認根拠、[次に行うこと](plans/next-steps.md)に作業順の提案をまとめます。
 
 | ID | 状態 | 要件 | 実装・検証の担当 |
 |---|---|---|---|
@@ -23,6 +25,7 @@
 | R17 | user | アプリ実行時の負荷・メモリ使用量の抑制を重視し、WindowsクライアントにGPUIを使用する | desktop-gpui / resource measurements / GPUI gate |
 | R18 | user | デスクトップは単一時系列のチャット専用。白と空色を基調にし、画像・キャラクター描画と記憶・人格・モデル・権限の管理画面を含めない。接続設定は残し、管理アプリは別にする | desktop-gpui / ADR 0005 |
 | R19 | user | マイク入力とAI音声出力を独立トグルにし、起動時は両方OFF。マイクON中は発話を自動区切りし、トレイへ隠しても会話を続け、終了操作で停止する | client-core audio / desktop-gpui / GPUI gate |
+| R20 | user | 利用開始と開発のセットアップを共通化する。Windowsアプリは初回画面、Windows/macOS/Linuxサーバーは対話式。展開型配布、端末別接続ファイル、選択式のOS起動時常駐を提供し、今後のアプリにも再利用する | app-support / server setup / application manifest / ADR 0006 |
 | D01 | design | Rust + Tokio + Axum、SQLx + SQLite | server / storage-sqlite |
 | D02 | design | R17に従いRust + GPUIで継続開発する。対象環境での適合性合格を本採用の条件とする | desktop-gpui / GPUI gate / ADR 0004 |
 | D03 | design | 一つの私有Gitリポジトリ内の複数プロジェクト | Cargo workspace |

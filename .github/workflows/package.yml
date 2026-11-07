@@ -1,0 +1,71 @@
+name: package
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            app: server
+          - os: windows-latest
+            app: desktop
+          - os: macos-15
+            app: server
+          - os: macos-15-intel
+            app: server
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: python tools/inori.py package --app ${{ matrix.app }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inori-${{ matrix.app }}-${{ matrix.os }}
+          path: artifacts/dist/*
+          if-no-files-found: error
+  linux:
+    runs-on: ubuntu-24.04
+    container: debian:12
+    steps:
+      - name: Build prerequisites in the minimum glibc environment
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates curl build-essential pkg-config python3 git
+      - uses: actions/checkout@v4
+      - name: Fixed Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/inori-rustup.sh
+          sh /tmp/inori-rustup.sh -y --profile minimal --default-toolchain 1.95.0
+      - name: Build and package
+        env:
+          PATH: /github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          python3 tools/inori.py package --app server
+          python3 tools/test_setup.py --server target/release/inori-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inori-server-debian12-x86_64
+          path: artifacts/dist/*
+          if-no-files-found: error
+  linux-compatible:
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: inori-server-debian12-x86_64
+          path: artifacts/dist
+      - name: Exercise the Debian-built portable binary on Ubuntu
+        shell: bash
+        run: |
+          mkdir -p .cache/package-smoke
+          tar -xzf artifacts/dist/*.tar.gz -C .cache/package-smoke
+          python3 tools/test_setup.py --server .cache/package-smoke/*/inori-server

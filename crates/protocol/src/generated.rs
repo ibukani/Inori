@@ -2,6 +2,49 @@
 use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const PROTOCOL_MAJOR: u64 = 1;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDeviceRequest {
+    pub name: String,
+    pub audience: Audience,
+    pub admin: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDeviceResponse {
+    pub device_id: String,
+    pub token: String,
+}
+impl std::fmt::Debug for CreateDeviceResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateDeviceResponse")
+            .field("device_id", &self.device_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionBundle {
+    pub schema_version: u64,
+    pub server_url: String,
+    pub certificate_pem: String,
+    pub device_id: String,
+    pub app_id: String,
+    pub token: String,
+}
+impl std::fmt::Debug for ConnectionBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionBundle")
+            .field("schema_version", &self.schema_version)
+            .field("server_url", &self.server_url)
+            .field("certificate_pem", &self.certificate_pem)
+            .field("device_id", &self.device_id)
+            .field("app_id", &self.app_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Audience {
     #[serde(rename = "private")]

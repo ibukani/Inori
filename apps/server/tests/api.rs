@@ -86,6 +86,61 @@ async fn value(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
+async fn device_issuance_is_admin_only_and_returns_a_distinct_revocable_credential() {
+    let (_temp, routes, app) = setup().await;
+    let body = json!({"name":"synthetic client", "audience":"private", "admin":false});
+    let denied = routes
+        .clone()
+        .oneshot(request("POST", "/v1/devices", PUBLIC, body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let response = routes
+        .clone()
+        .oneshot(request("POST", "/v1/devices", OWNER, body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let issued: inori_protocol::CreateDeviceResponse =
+        serde_json::from_value(value(response).await).unwrap();
+    assert!(!format!("{issued:?}").contains(&issued.token));
+    let device = app
+        .service
+        .repo
+        .device_by_hash(&token_hash(&issued.token))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!device.admin);
+    let denied = routes
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/devices",
+            &issued.token,
+            json!({"name":"escalation", "audience":"private", "admin":true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    app.service
+        .repo
+        .revoke_device(&issued.device_id)
+        .await
+        .unwrap();
+    let denied = routes
+        .oneshot(request(
+            "GET",
+            "/v1/capabilities",
+            &issued.token,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn snapshot_matches_the_canonical_schema_and_generated_client_type() {
     let (_temp, routes, app) = setup().await;
     app.service
@@ -279,7 +334,7 @@ async fn memory_lifecycle_and_model_switch_preserve_owner_assertions() {
 async fn mock_chat_streams_and_is_durable() {
     let (_temp, routes, app) = setup().await;
     let mut events = app.service.subscribe();
-    let response=routes.oneshot(request("POST","/v1/chat",OWNER,json!({"text":"こんにちは","audience":"private","mode":"auto","session_id":"session","speak":false}))).await.unwrap();
+    let response=routes.clone().oneshot(request("POST","/v1/chat",OWNER,json!({"text":"こんにちは","audience":"private","mode":"auto","session_id":"session","speak":false}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let accepted = value(response).await;
     let mut deltas = 0;
@@ -311,7 +366,16 @@ async fn mock_chat_streams_and_is_durable() {
         .await
         .unwrap();
     assert_eq!(records.len(), 2);
+    assert_eq!(records[0].actor, Actor::User);
     assert_eq!(records[1].actor, Actor::Assistant);
+    let snapshot = routes
+        .oneshot(request("GET", "/v1/snapshot", OWNER, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.status(), StatusCode::OK);
+    let snapshot = value(snapshot).await;
+    assert_eq!(snapshot["sources"][0]["actor"], "user");
+    assert_eq!(snapshot["sources"][1]["actor"], "assistant");
     app.service.stop().await;
 }
 

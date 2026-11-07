@@ -1,0 +1,19 @@
+schema_version = 1
+
+[apps.server]
+package = "inori-server"
+binary = "inori-server"
+platforms = ["windows", "macos", "linux"]
+setup_args = ["setup"]
+files = [
+  { source = "deploy/portable/server/README.md", target = "README.md" },
+  { source = "deploy/portable/server/setup.cmd", target = "setup.cmd", platforms = ["windows"] },
+  { source = "deploy/portable/server/setup.sh", target = "setup.sh", platforms = ["macos", "linux"] },
+]
+
+[apps.desktop]
+package = "inori-desktop"
+binary = "inori-desktop"
+platforms = ["windows"]
+setup_args = []
+files = [{ source = "deploy/portable/desktop/README.md", target = "README.md" }]
