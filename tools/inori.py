@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 
 if sys.version_info < (3, 11):
@@ -193,9 +194,107 @@ def package_artifact(app: dict, executable: Path, version: str, current: str, ar
     return destination
 
 
+def require_local_server(command: str, app_id: str, current: str, target: str | None) -> None:
+    if app_id != "server" or current not in {"windows", "macos", "linux"}:
+        raise ValueError(f"{command} is supported only for the server on Windows, macOS, or Linux")
+    if target:
+        raise ValueError(f"{command} operates on this machine and does not accept --target")
+
+
+def installed_server_paths(current: str) -> tuple[Path, Path]:
+    if current == "windows":
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        program_data = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+        return (program_files / "Inori" / "server" / "inori-server.exe",
+                program_data / "Inori" / "server")
+    if current == "macos":
+        return (Path("/usr/local/lib/inori/inori-server"),
+                Path("/Library/Application Support/Inori/server"))
+    return Path("/opt/inori/inori-server"), Path("/var/lib/inori")
+
+
+def require_windows_admin() -> None:
+    import ctypes
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        raise ValueError("管理者として開いたPowerShellから実行してください。")
+
+
+def privileged_command(command: list[str], current: str, preserve_env: list[str] | None = None) -> list[str]:
+    if current == "windows" or os.geteuid() == 0:
+        return command
+    names = [name for name in (preserve_env or []) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and name in os.environ]
+    sudo_args = [f"--preserve-env={','.join(names)}"] if names else []
+    return ["sudo", *sudo_args, *command]
+
+
+def setup_environment_names(arguments: list[str]) -> list[str]:
+    names = []
+    for index, argument in enumerate(arguments):
+        if argument == "--api-key-env" and index + 1 < len(arguments):
+            names.append(arguments[index + 1])
+        elif argument.startswith("--api-key-env="):
+            names.append(argument.split("=", 1)[1])
+    return names
+
+
+def install_local_server(executable: Path, app: dict, extra: list[str], current: str) -> None:
+    command = [str(executable), *app["setup_args"], "--autostart", "--start", *extra]
+    invoke(privileged_command(command, current, setup_environment_names(extra)))
+
+
+def uninstall_local_server(current: str) -> None:
+    executable, data_dir = installed_server_paths(current)
+    if not executable.is_file():
+        print("Inori server is not installed.")
+        return
+    invoke(privileged_command([str(executable), "--data-dir", str(data_dir), "service", "uninstall"], current))
+    if current == "windows":
+        executable.unlink()
+    else:
+        invoke(privileged_command(["rm", "-f", "--", str(executable)], current))
+    print(f"Inori server was uninstalled. Data and settings remain in {data_dir}.")
+
+
+def update_local_server(app: dict, executable: Path, version: str, architecture: str, current: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="inori-dev-update-") as temporary:
+        temporary_dir = Path(temporary)
+        output_dir = temporary_dir / "dist"
+        output_dir.mkdir()
+        artifact = package_artifact(app, executable, version, current, architecture, output_dir,
+                                   license_documents(app))
+        bundle_name = artifact.name.removesuffix(".zip" if current == "windows" else ".tar.gz")
+        bundle_dir = temporary_dir / bundle_name
+        bundle_dir.mkdir()
+        if current == "windows":
+            with zipfile.ZipFile(artifact) as archive:
+                for name in archive.namelist():
+                    path = PurePosixPath(name)
+                    if (len(path.parts) != 2 or path.parts[0] != bundle_name or
+                            path.parts[1] in {".", ".."} or any(char in path.parts[1] for char in "\\/:")):
+                        raise ValueError("generated update archive contains an unexpected entry")
+                    destination = bundle_dir / path.parts[1]
+                    destination.write_bytes(archive.read(name))
+            command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(bundle_dir / "update.ps1")]
+        else:
+            with tarfile.open(artifact, "r:gz") as archive:
+                for member in archive.getmembers():
+                    path = PurePosixPath(member.name)
+                    if (len(path.parts) != 2 or path.parts[0] != bundle_name or not member.isfile() or
+                            path.parts[1] in {".", ".."} or any(char in path.parts[1] for char in "\\/:")):
+                        raise ValueError("generated update archive contains an unexpected entry")
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise ValueError("cannot read generated update archive entry")
+                    destination = bundle_dir / path.parts[1]
+                    destination.write_bytes(source.read())
+                    destination.chmod(member.mode & 0o777)
+            command = [str(bundle_dir / "update.sh")]
+        invoke(privileged_command(command, current))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["doctor", "setup", "build", "run", "package"])
+    parser.add_argument("command", choices=["doctor", "setup", "build", "run", "package", "install", "update", "uninstall"])
     parser.add_argument("--app", default="server")
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--no-build", action="store_true")
@@ -212,17 +311,38 @@ def main() -> int:
     current = PLATFORMS.get(platform.system())
     if current not in app["platforms"]:
         parser.error("this application does not support the current OS")
+    if args.command in {"install", "update", "uninstall"}:
+        try:
+            require_local_server(args.command, args.app, current, args.target)
+            if current == "windows":
+                require_windows_admin()
+        except ValueError as error:
+            parser.error(str(error))
+        if args.command in {"update", "uninstall"} and extra:
+            parser.error(f"unexpected extra arguments for {args.command}")
+        if args.command == "uninstall":
+            try:
+                uninstall_local_server(current)
+            except (OSError, subprocess.CalledProcessError, ValueError) as error:
+                raise SystemExit(str(error)) from None
+            return 0
     if args.command == "doctor":
         return 0 if prerequisites(app, args.sdk) else 1
-    if args.command in {"build", "package"} and extra:
+    if args.command in {"build", "package", "update"} and extra:
         parser.error("unexpected extra arguments")
-    release = args.release or args.command == "package"
+    release = args.release or args.command in {"package", "install", "update"}
     if not args.no_build:
         if not prerequisites(app, args.sdk):
             return 1
         build(app, release, args.target)
     executable = binary_path(app, release, args.target)
-    if args.command == "setup":
+    if args.command == "install":
+        install_local_server(executable, app, extra, current)
+    elif args.command == "update":
+        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+        architecture = {"AMD64": "x86_64", "arm64": "aarch64"}.get(platform.machine(), platform.machine())
+        update_local_server(app, executable, version, architecture, current)
+    elif args.command == "setup":
         invoke([str(executable), *app["setup_args"], *extra])
     elif args.command == "run":
         invoke([str(executable), *extra])

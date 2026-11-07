@@ -38,7 +38,8 @@
 - 実装: serverのsetup/doctor/export-connection/service、管理者限定POST /v1/devices、通常端末はadmin=false、環境変数優先の秘密情報の明示注入。既存モデルは保持し、別モデルは別プロファイルとして追加する。
 - 実装: Windows LocalService、macOS _inori LaunchDaemon、Linux inori systemdの登録・操作・停止入口。既存データ移行は停止・バックアップ・明示指定を必要とし、元データと解除後のデータを保持する。このPCにはサービスを登録していない。
 - 実装: アプリ宣言、dev.ps1/dev.sh、共通Pythonのdoctor/setup/build/run/package、許可リストでのZIP/tar.gz・ライセンス・チェックサム作成、手動配布CI。Rust/Python等の自動導入やエンジン・モデル取得は行わない。
-- 実装追加: Linux配布物に `update.sh` を同梱。SHA256検査、更新前DBバックアップ、サービス停止・差し替え・起動確認を行い、起動失敗時は旧バイナリとDBへ戻す。Ubuntu実機での動作は未検証。
+- 実装追加: Windows/macOS/Linuxの配布物にOS別 `update` スクリプトを同梱。チェックサム検査、更新前DBバックアップ、サービス停止・差し替え・起動確認を行い、起動失敗時は旧バイナリとDBへ戻す。実OSでの更新は未検証。
+- 実装追加: `install/update/uninstall --app server` の共通開発コマンドを追加。checkout中のソースをreleaseビルドして常駐導入またはバックアップ付き更新を行い、解除時はOSサービスと固定バイナリを削除してデータを保持する。Windows/macOS/Linux実機で未検証。
 - 確認済み: Windows x64のdebug/releaseビルド、Rust 54件、TypeScript型検査と2件、配布ツール3件、fmt・契約生成・依存方向・GUI以外のClippy。既存incremental cacheのhard-link警告は発生する。
 - 確認済み: Windows release ZIPのアーカイブと各ファイルのSHA256を照合し、展開した実行ファイルをRust/Python/NodeがPATHにない状態で検査した。これはクリーンOSへの導入確認ではない。対話式CLIも架空の保存先・mock・常駐なしで保存まで確認した。
 - 確認済み: .cache内の架空データで初期設定・再設定・ポート競合・証明書保持・不一致拒否・稼働中のロック・停止中/稼働中の端末発行・既定管理権限なし・失効・再起動を検査。GUIを起動しないデスクトップ診断もHTTPS・認証に成功した。

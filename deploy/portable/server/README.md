@@ -11,6 +11,10 @@ OS起動時の常駐はセットアップで選択するか、管理者/rootと�
 Windowsのサービス管理に使用する名前は `InoriServer`、macOSは `dev.inori.server`、Linuxは `inori.service` です。
 常駐登録の解除は `service uninstall`。解除しても保存データは残ります。
 
+常駐登録済みのサーバーを更新するには、新しい配布物を展開して更新スクリプトを実行します。
+Windowsは管理者PowerShellで `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update.ps1`、
+macOS/Linuxは `sudo ./update.sh` を使います。更新前DBを保存し、起動確認に失敗した場合は旧バイナリとDBへ戻します。
+
 別PCへ渡す接続用ファイル:
 
 ```

@@ -4,6 +4,7 @@
 
 共通入口は `./dev.ps1`（Windows）または `sh ./dev.sh`（Mac/Linux）です。
 `doctor --app server` で不足ツールを確認し、`setup --app server` でビルドと初期設定を行います。
+Windows/macOS/Linuxでは、開発版サーバーを常駐導入・更新・解除する共通コマンドも使えます（詳細は[セットアップ](setup.md)）。
 ビルド済み配布物ではRust/Pythonは不要です。初回設定・接続ファイル・常駐登録・配布の詳細は
 [セットアップ](setup.md) を参照してください。以下の従来の直接起動も維持しています。
 

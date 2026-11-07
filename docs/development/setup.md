@@ -109,6 +109,10 @@ OSの停止待機枠は10秒、サーバー内の期限は従来の5秒を維持
 登録解除でデータ・証明書・キーを削除しない。
 異なる版への更新は停止・バックアップ後に固定バイナリを更新する。旧版へ戻す場合は対応するDBバックアップも戻す。
 
+常駐登録済みなら、Windows/macOS/Linuxの配布物に含む更新スクリプトを実行できます。
+チェックサムを検査し、サービス停止・DBバックアップ・バイナリ差し替え・起動確認を行います。
+起動確認に失敗した場合は旧バイナリと更新前DBへ戻します。配布物の作成と転送は引き続き手動です。
+
 ## 開発と将来アプリの追加
 
 Windowsは `./dev.ps1`、Mac/Linuxは `sh ./dev.sh` が共通入口。Python 3.11以上が必要。
@@ -122,6 +126,28 @@ Rust・C++ツール等の不足を検出して案内し、自動インストー�
 ./dev.ps1 package --app server
 ./dev.ps1 package --app desktop
 ```
+
+開発機から、checkout中のソースでサーバーを常駐導入・更新・解除できます。`install` と `update` はreleaseビルドです。
+Windowsでは管理者PowerShellから実行し、macOS/Linuxでは必要な操作に `sudo` を使います。
+
+macOS/Linux:
+
+```sh
+sh ./dev.sh install --app server
+sh ./dev.sh update --app server
+sh ./dev.sh uninstall --app server
+```
+
+Windowsでは管理者PowerShellから同じコマンド名を `./dev.ps1` で実行します。
+
+```powershell
+./dev.ps1 install --app server
+./dev.ps1 update --app server
+./dev.ps1 uninstall --app server
+```
+
+更新前にGitで使う変更をcheckoutしてください。`uninstall` はOSサービスと固定バイナリを取り除き、
+DB・証明書・設定は各OSのサーバーデータ領域に保持します。
 
 通常は固定ツールチェーンでビルドして実行する。既存ビルドには `--no-build`、release実行には `--release`。
 `package` は常にreleaseを梱包し、Git対象外の `artifacts/dist` へ出力する。
