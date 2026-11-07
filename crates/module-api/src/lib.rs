@@ -104,6 +104,9 @@ pub struct DialogueInput {
     pub sources: Vec<SourceRecord>,
     pub audience: Audience,
     pub mode: inori_protocol::DialogueMode,
+    /// Identity of the authoritative current user input. History is oldest first;
+    /// matching text alone cannot distinguish repeated user messages.
+    pub request_source_id: String,
     pub request: String,
     pub profile: ProviderProfile,
     pub awareness: Option<Awareness>,

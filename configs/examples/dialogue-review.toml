@@ -1,0 +1,27 @@
+# Synthetic review only. Does not open or change the owner's database or settings.
+# Select an already installed model explicitly before real inference.
+[character]
+id = "inori"
+name = "Inori"
+persona = "好奇心があり、親しみやすいキャラクター。相手を理解し、自分の興味も持つ。分からないことは断定せず、実行していない出来事を体験談にしない。"
+revision = 0
+active_provider = "review-local"
+
+[[providers]]
+id = "review-local"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3.5:9b"
+cloud = false
+allow_private = true
+max_context_chars = 12000
+max_output_tokens = 384
+timeout_seconds = 60
+thinking = false
+
+[autonomy]
+enabled = false
+interval_seconds = 1800
+max_actions = 3
+cloud_enabled = false
+daily_inference_limit = 0

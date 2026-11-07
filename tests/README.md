@@ -5,6 +5,7 @@
 
 | 種別 | テスト・ツールの配置 |
 |---|---|
+| 人格と会話品質 | dialogue-standardの文脈・モード・参考情報・上限・公開範囲17件、`tests/dialogue/stage1.json`、serverの`dialogue-review` example、`tools/review_dialogue.py`と`tools/test_review_dialogue.py`（10件）。実装判定とモデル応答の観測は[専用手順](../docs/development/dialogue-review.md)で分離 |
 | 契約 | `apps/server/tests/api.rs` のスキーマ照合、`tools/generate_contracts.py --check` |
 | ドメイン・保存 | `crates/domain/src/lib.rs`、`crates/storage-sqlite/src/lib.rs` のテスト |
 | 統合 | `apps/server/tests/api.rs`、`apps/server/tests/extensions.rs` |

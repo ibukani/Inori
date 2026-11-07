@@ -26,6 +26,8 @@
 | R18 | user | デスクトップは単一時系列のチャット専用。白と空色を基調にし、画像・キャラクター描画と記憶・人格・モデル・権限の管理画面を含めない。接続設定は残し、管理アプリは別にする | desktop-gpui / ADR 0005 |
 | R19 | user | マイク入力とAI音声出力を独立トグルにし、起動時は両方OFF。マイクON中は発話を自動区切りし、トレイへ隠しても会話を続け、終了操作で停止する | client-core audio / desktop-gpui / GPUI gate |
 | R20 | user | 利用開始と開発のセットアップを共通化する。Windowsアプリは初回画面、Windows/macOS/Linuxサーバーは対話式。展開型配布、端末別接続ファイル、選択式のOS起動時常駐を提供し、今後のアプリにも再利用する | app-support / server setup / application manifest / ADR 0006 |
+| R21 | user | 好奇心・率直さを強く、遊び好きで最初から気軽な友人とし、特定の趣味は固定しない。人格の伝わる会話、興味の継続、自発発話を一段階ずつ仕上げ、各段階で人間の作品を参考にした実AI比較と本人の会話確認を行う | dialogue / memory / autonomy / ADR 0007 / character-continuity |
+| R22 | user | AIの性能差を受け入れ、将来の負債になる禁止プロンプトや補正を極力追加せず、実装で直せる問題を修正する。最小限の応答方針を残し、Autoの深さはモデルの設定上限内で任せる。実装の合否とモデルの会話品質を分ける | dialogue / review tools / ADR 0008 |
 | D01 | design | Rust + Tokio + Axum、SQLx + SQLite | server / storage-sqlite |
 | D02 | design | R17に従いRust + GPUIで継続開発する。対象環境での適合性合格を本採用の条件とする | desktop-gpui / GPUI gate / ADR 0004 |
 | D03 | design | 一つの私有Gitリポジトリ内の複数プロジェクト | Cargo workspace |

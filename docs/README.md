@@ -11,6 +11,7 @@
 | ソースから起動する・通常の検査を行う | [開発と起動](development/quickstart.md) |
 | 今できること・確認済みの範囲・未検証事項 | [実装状況](development/status.md) |
 | 次の作業・優先順・完了条件 | [次に行うこと](plans/next-steps.md) |
+| 人格・継続性を一段階ずつ実装する | [段階実装](plans/character-continuity.md)、[対話処理の簡素化](plans/dialogue-simplification.md)、[人物像と出典](character/inori.md)、[会話比較](development/dialogue-review.md) |
 | ユーザーの確定要件・設計判断・仮目標 | [要件と対応表](requirements.md) |
 | 全体の目的・実装方針・初期範囲 | [統合実装プラン](plans/inori.md) |
 | 責務・依存方向・状態と情報の保護 | [アーキテクチャ](architecture.md) |

@@ -231,6 +231,7 @@ impl Service {
         a: Audience,
         mode: DialogueMode,
         request: &str,
+        request_source_id: &str,
     ) -> Result<GenerationContext> {
         let policy = self
             .modules
@@ -263,6 +264,7 @@ impl Service {
             sources,
             audience: a,
             mode,
+            request_source_id: request_source_id.into(),
             request: request.into(),
             profile: provider.profile().clone(),
             awareness,
@@ -445,7 +447,13 @@ impl Service {
         let a = domain_audience(request.audience);
         let started = std::time::Instant::now();
         let context = self
-            .context(provider.as_ref(), a, request.mode, &request.text)
+            .context(
+                provider.as_ref(),
+                a,
+                request.mode,
+                &request.text,
+                &source_id,
+            )
             .await?;
         self.validate_inference(&context, provider.as_ref(), a)?;
         let inference_slot = self.inference_slot(cancel.clone()).await?;
